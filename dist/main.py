@@ -115,7 +115,8 @@ def download_video(
     webhookUrl: Optional[str] = None,
     executionMode: Optional[str] = None,
     ts_baseurl: Optional[str] = None,
-    toolCallId: Optional[str] = None
+    toolCallId: Optional[str] = None,
+    **kwargs
 ) -> dict:
     """
     Download a video from a URL using yt-dlp.
