@@ -1,4 +1,4 @@
-fastmcp>=0.1.0
+fastmcp>=2.14.0
 uvicorn>=0.24.0
 yt-dlp>=2023.12.0
 

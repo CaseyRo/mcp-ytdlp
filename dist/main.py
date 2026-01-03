@@ -115,8 +115,7 @@ def download_video(
     webhookUrl: Optional[str] = None,
     executionMode: Optional[str] = None,
     ts_baseurl: Optional[str] = None,
-    toolCallId: Optional[str] = None,
-    **kwargs
+    toolCallId: Optional[str] = None
 ) -> dict:
     """
     Download a video from a URL using yt-dlp.
@@ -125,7 +124,8 @@ def download_video(
         url: Video URL to download (can be in body.recipe.url if nested)
         cookies_file: Optional path to cookies file for authentication
         body: Optional body dict containing nested parameters
-        **kwargs: Additional parameters (ignored, for MCP client compatibility)
+        headers, params, query, recipe, webhookUrl, executionMode, ts_baseurl, toolCallId:
+            Additional parameters (ignored, for MCP client compatibility)
 
     Returns:
         Dictionary with status, filename, and path
@@ -138,8 +138,6 @@ def download_video(
                     url = body['recipe'].get('url')
                 elif 'url' in body:
                     url = body.get('url')
-            if not url and 'url' in kwargs:
-                url = kwargs.get('url')
 
         if not url:
             return {
@@ -154,8 +152,6 @@ def download_video(
                     cookies_file = body['recipe'].get('cookies_file')
                 elif 'cookies_file' in body:
                     cookies_file = body.get('cookies_file')
-            if (not cookies_file or cookies_file == "[null]") and 'cookies_file' in kwargs:
-                cookies_file = kwargs.get('cookies_file')
 
         # Clean up cookies_file value
         if cookies_file == "[null]" or cookies_file == "null":
