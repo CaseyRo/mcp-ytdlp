@@ -11,7 +11,8 @@ import threading
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Any, Dict
+from pydantic import BaseModel, ConfigDict
 
 from fastmcp import FastMCP
 
@@ -105,20 +106,62 @@ cleanup_thread.start()
 
 @mcp.tool()
 def download_video(
-    url: str,
-    cookies_file: Optional[str] = None
+    url: str = None,
+    cookies_file: Optional[str] = None,
+    body: Optional[Dict[str, Any]] = None,
+    recipe: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+    query: Optional[Dict[str, Any]] = None,
+    webhookUrl: Optional[str] = None,
+    executionMode: Optional[str] = None,
+    ts_baseurl: Optional[str] = None,
+    toolCallId: Optional[str] = None,
+    **kwargs  # Accept any other extra parameters
 ) -> dict:
     """
     Download a video from a URL using yt-dlp.
 
     Args:
-        url: Video URL to download
+        url: Video URL to download (can be in body.recipe.url if nested)
         cookies_file: Optional path to cookies file for authentication
+        body: Optional body dict containing nested parameters
+        **kwargs: Additional parameters (ignored, for MCP client compatibility)
 
     Returns:
         Dictionary with status, filename, and path
     """
     try:
+        # Extract URL from various possible locations (MCP client may nest it)
+        if not url:
+            if body and isinstance(body, dict):
+                if 'recipe' in body and isinstance(body['recipe'], dict):
+                    url = body['recipe'].get('url')
+                elif 'url' in body:
+                    url = body.get('url')
+            if not url and 'url' in kwargs:
+                url = kwargs.get('url')
+
+        if not url:
+            return {
+                "status": "error",
+                "error": "URL is required. Provide 'url' parameter or 'body.recipe.url'"
+            }
+
+        # Extract cookies_file from various possible locations
+        if not cookies_file or cookies_file == "[null]":
+            if body and isinstance(body, dict):
+                if 'recipe' in body and isinstance(body['recipe'], dict):
+                    cookies_file = body['recipe'].get('cookies_file')
+                elif 'cookies_file' in body:
+                    cookies_file = body.get('cookies_file')
+            if (not cookies_file or cookies_file == "[null]") and 'cookies_file' in kwargs:
+                cookies_file = kwargs.get('cookies_file')
+
+        # Clean up cookies_file value
+        if cookies_file == "[null]" or cookies_file == "null":
+            cookies_file = None
+
         # Build output template
         if VIDEO_FILENAME_FORMAT:
             # Use custom format from environment variable
@@ -137,7 +180,7 @@ def download_video(
         ]
 
         # Add cookies file if provided
-        if cookies_file:
+        if cookies_file and cookies_file != "[null]":
             command.extend(["--cookies", cookies_file])
 
         command.append(url)
@@ -150,17 +193,31 @@ def download_video(
             check=True
         )
 
-        # Find the downloaded file
+        # Find the downloaded file by looking for recently created files
+        # Since we use yt-dlp format, we need to find the file by checking modification time
         output_path = Path(OUTPUT_DIR)
-        for file in output_path.iterdir():
-            if file.name.startswith(file_id):
-                return {
-                    "status": "success",
-                    "filename": file.name,
-                    "path": str(file)
-                }
+        if not output_path.exists():
+            raise Exception(f"Output directory does not exist: {OUTPUT_DIR}")
 
-        raise Exception("File not found after download")
+        # Get the most recently created/modified file (should be the one we just downloaded)
+        files = list(output_path.iterdir())
+        if not files:
+            raise Exception("No files found in output directory after download")
+
+        # Sort by modification time, most recent first
+        files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        most_recent = files[0]
+
+        # Verify it's a video file
+        video_extensions = {'.mp4', '.webm', '.avi', '.mov', '.mkv', '.flv', '.m4v'}
+        if most_recent.suffix.lower() not in video_extensions:
+            raise Exception(f"Downloaded file is not a video: {most_recent.name}")
+
+        return {
+            "status": "success",
+            "filename": most_recent.name,
+            "path": str(most_recent)
+        }
 
     except subprocess.CalledProcessError as e:
         return {
@@ -174,22 +231,29 @@ def download_video(
         }
 
 
-@mcp.tool()
-def convert_video(
-    video_filename: str,
+class ConvertVideoParams(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    video_filename: str
     target_format: str
-) -> dict:
+
+
+@mcp.tool()
+def convert_video(params: ConvertVideoParams) -> dict:
     """
     Convert a video file to a different format using FFmpeg.
 
     Args:
-        video_filename: Name of the video file to convert
-        target_format: Target format (mp4, webm, avi, mov, etc.)
+        params: ConvertVideoParams containing video_filename and target_format
+               (extra fields are ignored for MCP client compatibility)
 
     Returns:
         Dictionary with status, output filename, and path
     """
     try:
+        video_filename = params.video_filename
+        target_format = params.target_format
+
         input_path = Path(OUTPUT_DIR) / video_filename
         if not input_path.exists():
             return {
@@ -232,22 +296,29 @@ def convert_video(
         }
 
 
-@mcp.tool()
-def extract_screenshot(
-    video_filename: str,
+class ExtractScreenshotParams(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    video_filename: str
     timestamp: str
-) -> dict:
+
+
+@mcp.tool()
+def extract_screenshot(params: ExtractScreenshotParams) -> dict:
     """
     Extract a single frame from a video at a specified timestamp.
 
     Args:
-        video_filename: Name of the video file
-        timestamp: Timestamp in HH:MM:SS format
+        params: ExtractScreenshotParams containing video_filename and timestamp
+               (extra fields are ignored for MCP client compatibility)
 
     Returns:
         Dictionary with status, screenshot filename, and path
     """
     try:
+        video_filename = params.video_filename
+        timestamp = params.timestamp
+
         input_path = Path(OUTPUT_DIR) / video_filename
         if not input_path.exists():
             return {
@@ -300,20 +371,26 @@ def extract_screenshot(
         }
 
 
-@mcp.tool()
-def cleanup_files(
+class CleanupFilesParams(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     retention_days: Optional[int] = None
-) -> dict:
+
+
+@mcp.tool()
+def cleanup_files(params: CleanupFilesParams) -> dict:
     """
     Manually trigger cleanup of old files.
 
     Args:
-        retention_days: Optional retention period in days (overrides CLEANUP_RETENTION_DAYS)
+        params: CleanupFilesParams containing optional retention_days
+               (extra fields are ignored for MCP client compatibility)
 
     Returns:
         Dictionary with status and number of files deleted
     """
     try:
+        retention_days = params.retention_days
         deleted_count = cleanup_old_files(retention_days)
         return {
             "status": "success",
