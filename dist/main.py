@@ -107,6 +107,7 @@ cleanup_thread.start()
 def download_video(
     url: str = None,
     cookies_file: Optional[str] = None,
+    output_directory: Optional[str] = None,
     body: Optional[Dict[str, Any]] = None,
     recipe: Optional[Dict[str, Any]] = None,
     headers: Optional[Dict[str, Any]] = None,
@@ -123,6 +124,7 @@ def download_video(
     Args:
         url: Video URL to download (can be in body.recipe.url if nested)
         cookies_file: Optional path to cookies file for authentication
+        output_directory: Optional output directory path. If not provided, uses OUTPUT_DIRECTORY environment variable or default /data
         body: Optional body dict containing nested parameters
         headers, params, query, recipe, webhookUrl, executionMode, ts_baseurl, toolCallId:
             Additional parameters (ignored, for MCP client compatibility)
@@ -157,13 +159,20 @@ def download_video(
         if cookies_file == "[null]" or cookies_file == "null":
             cookies_file = None
 
+        # Determine output directory (parameter takes precedence over env var)
+        output_dir = output_directory if output_directory else OUTPUT_DIR
+        output_dir_path = Path(output_dir)
+
+        # Ensure output directory exists
+        output_dir_path.mkdir(parents=True, exist_ok=True)
+
         # Build output template
         if VIDEO_FILENAME_FORMAT:
             # Use custom format from environment variable
-            output_template = f"{OUTPUT_DIR}/{VIDEO_FILENAME_FORMAT}"
+            output_template = f"{output_dir}/{VIDEO_FILENAME_FORMAT}"
         else:
             # Default: use video ID (last part of URL) as filename
-            output_template = f"{OUTPUT_DIR}/%(id)s.%(ext)s"
+            output_template = f"{output_dir}/%(id)s.%(ext)s"
 
         # Build yt-dlp command
         # Use simpler format: best[ext=mp4] for direct MP4 download
@@ -190,9 +199,9 @@ def download_video(
 
         # Find the downloaded file by looking for recently created files
         # Since we use yt-dlp format, we need to find the file by checking modification time
-        output_path = Path(OUTPUT_DIR)
+        output_path = output_dir_path
         if not output_path.exists():
-            raise Exception(f"Output directory does not exist: {OUTPUT_DIR}")
+            raise Exception(f"Output directory does not exist: {output_dir}")
 
         # Get the most recently created/modified file (should be the one we just downloaded)
         files = list(output_path.iterdir())
@@ -299,6 +308,7 @@ def convert_video(
 def extract_screenshot(
     video_filename: str,
     timestamp: str,
+    output_directory: Optional[str] = None,
     headers: Optional[Dict[str, Any]] = None,
     params: Optional[Dict[str, Any]] = None,
     query: Optional[Dict[str, Any]] = None,
@@ -314,6 +324,7 @@ def extract_screenshot(
     Args:
         video_filename: Name of the video file
         timestamp: Timestamp in HH:MM:SS format
+        output_directory: Optional output directory path. If not provided, uses OUTPUT_DIRECTORY environment variable or default /data
         headers, params, query, body, webhookUrl, executionMode, ts_baseurl, toolCallId:
             Additional parameters (ignored, for MCP client compatibility)
 
@@ -321,13 +332,23 @@ def extract_screenshot(
         Dictionary with status, screenshot filename, and path
     """
     try:
+        # Determine output directory (parameter takes precedence over env var)
+        output_dir = output_directory if output_directory else OUTPUT_DIR
+        output_dir_path = Path(output_dir)
 
-        input_path = Path(OUTPUT_DIR) / video_filename
+        # Ensure output directory exists
+        output_dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Try to find video file in the specified output directory first, then fallback to default
+        input_path = output_dir_path / video_filename
         if not input_path.exists():
-            return {
-                "status": "error",
-                "error": f"Video file not found: {video_filename}"
-            }
+            # Fallback to default OUTPUT_DIR in case video is in default location
+            input_path = Path(OUTPUT_DIR) / video_filename
+            if not input_path.exists():
+                return {
+                    "status": "error",
+                    "error": f"Video file not found: {video_filename}"
+                }
 
         # Format screenshot filename
         timestamp_clean = timestamp.replace(":", "")
@@ -340,7 +361,7 @@ def extract_screenshot(
         else:
             screenshot_filename = f"{input_path.stem}_{timestamp_clean}.jpg"
 
-        output_path = Path(OUTPUT_DIR) / screenshot_filename
+        output_path = output_dir_path / screenshot_filename
 
         # FFmpeg command to extract frame
         command = [
