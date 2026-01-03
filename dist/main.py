@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Any, Dict
-from pydantic import BaseModel, ConfigDict
 
 from fastmcp import FastMCP
 
@@ -116,8 +115,7 @@ def download_video(
     webhookUrl: Optional[str] = None,
     executionMode: Optional[str] = None,
     ts_baseurl: Optional[str] = None,
-    toolCallId: Optional[str] = None,
-    **kwargs  # Accept any other extra parameters
+    toolCallId: Optional[str] = None
 ) -> dict:
     """
     Download a video from a URL using yt-dlp.
@@ -231,28 +229,32 @@ def download_video(
         }
 
 
-class ConvertVideoParams(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    video_filename: str
-    target_format: str
-
-
 @mcp.tool()
-def convert_video(params: ConvertVideoParams) -> dict:
+def convert_video(
+    video_filename: str,
+    target_format: str,
+    headers: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+    query: Optional[Dict[str, Any]] = None,
+    body: Optional[Dict[str, Any]] = None,
+    webhookUrl: Optional[str] = None,
+    executionMode: Optional[str] = None,
+    ts_baseurl: Optional[str] = None,
+    toolCallId: Optional[str] = None
+) -> dict:
     """
     Convert a video file to a different format using FFmpeg.
 
     Args:
-        params: ConvertVideoParams containing video_filename and target_format
-               (extra fields are ignored for MCP client compatibility)
+        video_filename: Name of the video file to convert
+        target_format: Target format (mp4, webm, avi, mov, etc.)
+        headers, params, query, body, webhookUrl, executionMode, ts_baseurl, toolCallId:
+            Additional parameters (ignored, for MCP client compatibility)
 
     Returns:
         Dictionary with status, output filename, and path
     """
     try:
-        video_filename = params.video_filename
-        target_format = params.target_format
 
         input_path = Path(OUTPUT_DIR) / video_filename
         if not input_path.exists():
@@ -296,28 +298,32 @@ def convert_video(params: ConvertVideoParams) -> dict:
         }
 
 
-class ExtractScreenshotParams(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    video_filename: str
-    timestamp: str
-
-
 @mcp.tool()
-def extract_screenshot(params: ExtractScreenshotParams) -> dict:
+def extract_screenshot(
+    video_filename: str,
+    timestamp: str,
+    headers: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+    query: Optional[Dict[str, Any]] = None,
+    body: Optional[Dict[str, Any]] = None,
+    webhookUrl: Optional[str] = None,
+    executionMode: Optional[str] = None,
+    ts_baseurl: Optional[str] = None,
+    toolCallId: Optional[str] = None
+) -> dict:
     """
     Extract a single frame from a video at a specified timestamp.
 
     Args:
-        params: ExtractScreenshotParams containing video_filename and timestamp
-               (extra fields are ignored for MCP client compatibility)
+        video_filename: Name of the video file
+        timestamp: Timestamp in HH:MM:SS format
+        headers, params, query, body, webhookUrl, executionMode, ts_baseurl, toolCallId:
+            Additional parameters (ignored, for MCP client compatibility)
 
     Returns:
         Dictionary with status, screenshot filename, and path
     """
     try:
-        video_filename = params.video_filename
-        timestamp = params.timestamp
 
         input_path = Path(OUTPUT_DIR) / video_filename
         if not input_path.exists():
@@ -371,26 +377,30 @@ def extract_screenshot(params: ExtractScreenshotParams) -> dict:
         }
 
 
-class CleanupFilesParams(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    retention_days: Optional[int] = None
-
-
 @mcp.tool()
-def cleanup_files(params: CleanupFilesParams) -> dict:
+def cleanup_files(
+    retention_days: Optional[int] = None,
+    headers: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+    query: Optional[Dict[str, Any]] = None,
+    body: Optional[Dict[str, Any]] = None,
+    webhookUrl: Optional[str] = None,
+    executionMode: Optional[str] = None,
+    ts_baseurl: Optional[str] = None,
+    toolCallId: Optional[str] = None
+) -> dict:
     """
     Manually trigger cleanup of old files.
 
     Args:
-        params: CleanupFilesParams containing optional retention_days
-               (extra fields are ignored for MCP client compatibility)
+        retention_days: Optional retention period in days (overrides CLEANUP_RETENTION_DAYS)
+        headers, params, query, body, webhookUrl, executionMode, ts_baseurl, toolCallId:
+            Additional parameters (ignored, for MCP client compatibility)
 
     Returns:
         Dictionary with status and number of files deleted
     """
     try:
-        retention_days = params.retention_days
         deleted_count = cleanup_old_files(retention_days)
         return {
             "status": "success",
