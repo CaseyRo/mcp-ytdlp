@@ -1,0 +1,52 @@
+## 1. Implementation
+- [x] 1.1 Create FastMCP server application (`main.py`) with `download_video`, `convert_video`, `extract_screenshot`, and `cleanup_files` MCP tools
+- [x] 1.2 Add cookies file parameter support to `download_video` tool for yt-dlp authentication
+- [x] 1.3 Implement progress tracking for download and conversion operations (structure in place, can be enhanced with callbacks)
+- [x] 1.4 Implement automatic cleanup service with configurable retention period (read from `CLEANUP_RETENTION_DAYS` env var, default 7 days)
+- [x] 1.5 Implement configurable output directory (read from `OUTPUT_DIRECTORY` env var, default `/data`)
+- [x] 1.6 Implement configurable video filename format (read from `VIDEO_FILENAME_FORMAT` env var, yt-dlp style formatting)
+- [x] 1.7 Implement configurable screenshot filename format (read from `SCREENSHOT_FILENAME_FORMAT` env var)
+- [x] 1.8 Create Dockerfile for media-sidecar service with Python 3.11, ffmpeg, and required dependencies
+- [x] 1.9 Create or update docker-compose.yaml to include media-sidecar service with shared volume matching existing n8n `/mnt/data/AI/n8n:/data` mount
+- [x] 1.10 Add environment variables to docker-compose.yaml: `CLEANUP_RETENTION_DAYS`, `OUTPUT_DIRECTORY`, `VIDEO_FILENAME_FORMAT`, `SCREENSHOT_FILENAME_FORMAT`
+- [x] 1.11 Create requirements.txt with Python dependencies (fastmcp, yt-dlp)
+- [ ] 1.12 Verify output directory exists and has appropriate permissions for both containers (requires runtime testing)
+- [x] 1.13 Add error handling and validation for MCP tools
+- [x] 1.14 Configure MCP server to use HTTP transport on port 8000 (required for network accessibility)
+- [ ] 1.15 Test video download functionality via MCP client with sample URLs
+- [ ] 1.16 Test video download with cookies file authentication
+- [ ] 1.17 Test video download with custom filename format
+- [ ] 1.18 Test video conversion functionality via MCP client with various formats (mp4, webm, etc.)
+- [ ] 1.19 Test screenshot extraction functionality via MCP client with downloaded videos
+- [ ] 1.20 Test screenshot extraction with custom filename format
+- [ ] 1.21 Test automatic cleanup functionality with files of various ages
+- [ ] 1.22 Test manual cleanup MCP tool with default and custom retention periods
+- [ ] 1.23 Test configurable output directory with different paths
+- [ ] 1.24 Verify shared volume access between containers
+- [x] 1.25 Create comprehensive README.md with setup instructions, configuration guide, MCP tool documentation, and troubleshooting
+- [x] 1.26 Document MCP tools with parameters, examples, and expected responses
+- [x] 1.27 Document all environment variables with descriptions, defaults, and usage examples
+- [x] 1.28 Document MCP client setup and connection instructions (e.g., Claude Desktop configuration)
+- [x] 1.29 Add troubleshooting section with common issues and solutions
+
+## 2. Validation
+- [ ] 2.1 Verify container builds successfully
+- [ ] 2.2 Verify containers start and MCP server is available via HTTP on port 8000
+- [ ] 2.3 Verify file sharing works between containers via shared volume
+- [ ] 2.4 Test MCP tools with MCP client via HTTP transport (e.g., Claude Desktop, custom MCP client)
+- [ ] 2.4a Verify HTTP accessibility from network (not just localhost)
+- [ ] 2.5 Validate yt-dlp downloads videos in MP4 format
+- [ ] 2.6 Validate cookies file authentication works for yt-dlp downloads
+- [ ] 2.7 Validate progress tracking provides accurate updates during downloads and conversions
+- [ ] 2.8 Validate configurable filename formats work correctly for videos and screenshots
+- [ ] 2.9 Validate configurable output directory works correctly
+- [ ] 2.10 Validate configurable retention period works correctly (test with different values)
+- [ ] 2.11 Validate ffmpeg converts videos between formats correctly
+- [ ] 2.12 Validate ffmpeg extracts screenshots at correct timestamps
+- [ ] 2.13 Validate automatic cleanup removes files older than configured retention period and preserves newer files
+- [ ] 2.14 Validate manual cleanup MCP tool works correctly with default and custom retention periods
+- [ ] 2.15 Test error handling for invalid URLs, missing files, unsupported formats, invalid cookies files, and invalid environment variable values via MCP tools
+- [ ] 2.16 Verify MCP tool discovery and schema are correctly exposed (including new cleanup tool)
+- [ ] 2.17 Verify documentation is complete, accurate, and easy to follow
+- [ ] 2.18 Test following documentation from scratch to ensure setup works as documented
+
