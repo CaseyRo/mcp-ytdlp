@@ -1,0 +1,46 @@
+name: n8n
+services:
+    n8n:
+        tty: true
+        container_name: n8n
+        ports:
+            - 5678:5678
+        volumes:
+            - /mnt/data/datapi/n8n:/home/node/.n8n
+            - /mnt/data/datapi/simple_apache_scanAPI/htdocs:/htdocs
+            - /home/parallels/Desktop/Parallels Shared Folders/Scans:/Scans
+            - /home/parallels/Desktop/Parallels Shared Folders/AUDIO:/AUDIO
+            - /mnt/data/EY/private/import:/import
+            - /mnt/data/AI/n8n:/data
+        image: n8nio/n8n:latest
+        environment:
+          N8N_SECURE_COOKIE: false
+          N8N_RUNNERS_ENABLED: true
+          N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: false
+          GENERIC_TIMEZONE: Europe/Berlin
+        restart: always
+        networks:
+            - n8n-network
+
+    media-sidecar:
+        build: .
+        container_name: n8n-media-sidecar
+        restart: unless-stopped
+        volumes:
+            - /mnt/data/AI/n8n:/data  # MUST match the n8n volume mapping
+        environment:
+            - OUTPUT_DIRECTORY=/data  # Default output directory (can be overridden)
+            - CLEANUP_RETENTION_DAYS=7  # Days to retain files before automatic cleanup
+            # Optional: Custom filename formats (yt-dlp style for videos)
+            # Default video format: %(id)s.%(ext)s (uses video ID from URL)
+            # - VIDEO_FILENAME_FORMAT=%(id)s.%(ext)s
+            # - SCREENSHOT_FILENAME_FORMAT=%(video_filename)s_%(timestamp)s.jpg
+        ports:
+            - "8000:8000"  # Expose HTTP port for MCP protocol access
+        networks:
+            - n8n-network
+
+networks:
+    n8n-network:
+        driver: bridge
+
