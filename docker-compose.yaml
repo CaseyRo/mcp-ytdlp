@@ -13,7 +13,7 @@ services:
             - CLEANUP_RETENTION_DAYS=7
             - VIDEO_FILENAME_FORMAT=%(id)s.%(ext)s
         ports:
-            - "8000:8000"
+            - "8128:8000"
         networks:
             - ytdlp-network
 

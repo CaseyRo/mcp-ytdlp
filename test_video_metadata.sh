@@ -5,7 +5,7 @@
 # Example: ./test_video_metadata.sh localhost:8000
 # Example: ./test_video_metadata.sh 192.168.1.100:8000
 
-set -e
+set -u
 
 # Get host:port from argument or default to localhost:8000
 HOST_PORT="${1:-localhost:8000}"
@@ -33,6 +33,44 @@ fi
 echo "✓ Server is reachable"
 echo ""
 
+# Initialize MCP session (FastMCP may require a session ID header)
+MCP_SESSION_ID=""
+INIT_ENDPOINT="/mcp"
+INIT_PAYLOAD='{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "clientInfo": { "name": "ytdlp-mcp-test", "version": "1.0" }
+  }
+}'
+
+INIT_TMP_HEADERS=$(mktemp)
+INIT_TMP_BODY=$(mktemp)
+
+curl -s -D "$INIT_TMP_HEADERS" -o "$INIT_TMP_BODY" -X POST "${SERVER_URL}${INIT_ENDPOINT}" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -d "$INIT_PAYLOAD" >/dev/null 2>&1
+
+MCP_SESSION_ID=$(grep -i '^mcp-session-id:' "$INIT_TMP_HEADERS" | head -n 1 | sed 's/^[^:]*:[[:space:]]*//;s/[[:space:]]*$//')
+
+if [ -z "$MCP_SESSION_ID" ]; then
+    # Some servers may return the session id in the body
+    MCP_SESSION_ID=$(grep -oE '"sessionId"[[:space:]]*:[[:space:]]*"[^"]+"' "$INIT_TMP_BODY" | head -n 1 | sed 's/.*"sessionId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+fi
+
+rm -f "$INIT_TMP_HEADERS" "$INIT_TMP_BODY"
+
+if [ -n "$MCP_SESSION_ID" ]; then
+    echo "✓ MCP session initialized"
+    echo ""
+else
+    echo "Warning: MCP session ID not found. Requests may fail if server requires sessions." >&2
+    echo ""
+fi
+
 # Check if jq is available for JSON formatting, otherwise use Python
 if command -v jq &> /dev/null; then
     JSON_FORMATTER="jq"
@@ -47,7 +85,11 @@ fi
 format_json() {
     local json_input="$1"
     if [ "$JSON_FORMATTER" = "jq" ]; then
-        echo "$json_input" | jq '.'
+        if echo "$json_input" | jq -e . >/dev/null 2>&1; then
+            echo "$json_input" | jq '.'
+        else
+            echo "$json_input"
+        fi
     elif [ "$JSON_FORMATTER" = "python3" ]; then
         echo "$json_input" | python3 -m json.tool 2>/dev/null || echo "$json_input"
     else
@@ -55,11 +97,29 @@ format_json() {
     fi
 }
 
-# Example video URLs to test
-TEST_URLS=(
-    "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-    "https://www.youtube.com/watch?v=jNQXAC9IVRw"
-)
+# Read example URLs from file if it exists, otherwise use defaults
+EXAMPLE_URLS_FILE="example_urls.txt"
+if [ -f "$EXAMPLE_URLS_FILE" ]; then
+    # Read URLs from file, skipping empty lines and comments
+    # Use portable method that works in both bash and zsh
+    TEST_URLS=()
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip comments and empty lines
+        line_trimmed=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -n "$line_trimmed" ] && [ "${line_trimmed#\#}" = "$line_trimmed" ]; then
+            TEST_URLS+=("$line_trimmed")
+        fi
+    done < "$EXAMPLE_URLS_FILE"
+    echo "Loaded ${#TEST_URLS[@]} URLs from $EXAMPLE_URLS_FILE"
+    echo ""
+else
+    # Fallback to default URLs if file doesn't exist
+    echo "Warning: $EXAMPLE_URLS_FILE not found. Using default test URLs." >&2
+    TEST_URLS=(
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+    )
+fi
 
 # Function to make MCP tool call using FastMCP HTTP protocol
 # FastMCP typically uses POST with JSON-RPC 2.0 format
@@ -70,6 +130,7 @@ call_mcp_tool() {
     # Try common FastMCP HTTP endpoints
     # FastMCP may use different patterns - adjust based on actual implementation
     local endpoints=(
+        "/mcp"
         "/mcp/tools/call"
         "/tools/call"
         "/api/tools/call"
@@ -84,6 +145,8 @@ call_mcp_tool() {
         # Format 1: Standard JSON-RPC 2.0
         response=$(curl -s -X POST "${SERVER_URL}${endpoint}" \
             -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            $( [ -n "${MCP_SESSION_ID:-}" ] && printf '%s' "-H MCP-Session-Id: ${MCP_SESSION_ID}" ) \
             -d "{
                 \"jsonrpc\": \"2.0\",
                 \"id\": 1,
@@ -96,12 +159,16 @@ call_mcp_tool() {
         
         if [ -n "$response" ] && echo "$response" | grep -qE "(status|result|error)"; then
             found=true
+            MCP_ENDPOINT_USED="${endpoint}"
+            MCP_ENDPOINT_USED_MODE="jsonrpc"
             break
         fi
         
         # Format 2: Simpler POST format
         response=$(curl -s -X POST "${SERVER_URL}${endpoint}" \
             -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            $( [ -n "${MCP_SESSION_ID:-}" ] && printf '%s' "-H MCP-Session-Id: ${MCP_SESSION_ID}" ) \
             -d "{
                 \"tool\": \"${tool_name}\",
                 \"arguments\": ${params_json}
@@ -109,16 +176,22 @@ call_mcp_tool() {
         
         if [ -n "$response" ] && echo "$response" | grep -qE "(status|result|error)"; then
             found=true
+            MCP_ENDPOINT_USED="${endpoint}"
+            MCP_ENDPOINT_USED_MODE="simple"
             break
         fi
         
         # Format 3: Direct tool call
         response=$(curl -s -X POST "${SERVER_URL}${endpoint}/${tool_name}" \
             -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            $( [ -n "${MCP_SESSION_ID:-}" ] && printf '%s' "-H MCP-Session-Id: ${MCP_SESSION_ID}" ) \
             -d "${params_json}" 2>/dev/null || echo "")
         
         if [ -n "$response" ] && echo "$response" | grep -qE "(status|result|error)"; then
             found=true
+            MCP_ENDPOINT_USED="${endpoint}/${tool_name}"
+            MCP_ENDPOINT_USED_MODE="direct"
             break
         fi
     done
@@ -145,7 +218,20 @@ EOF
 )
     
     # Make tool call
-    response=$(call_mcp_tool "download_video" "$PARAMS_JSON" 2>&1)
+    response=$(call_mcp_tool "download_video" "$PARAMS_JSON")
+    call_status=$?
+
+    if [ $call_status -ne 0 ]; then
+        echo "Error calling tool (non-zero exit status):"
+        format_json "$response"
+        echo ""
+        continue
+    fi
+
+    if [ -n "${MCP_ENDPOINT_USED:-}" ] && [ "${MCP_ENDPOINT_USED:-}" != "${LAST_ENDPOINT_USED:-}" ]; then
+        echo "Using endpoint: ${MCP_ENDPOINT_USED} (${MCP_ENDPOINT_USED_MODE})"
+        LAST_ENDPOINT_USED="${MCP_ENDPOINT_USED}"
+    fi
     
     if echo "$response" | grep -q "error" && ! echo "$response" | grep -q "\"status\": \"success\""; then
         echo "Error calling tool:"

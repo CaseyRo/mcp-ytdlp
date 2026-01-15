@@ -138,6 +138,64 @@ def get_ytdlp_version_info(force_check: bool = False) -> Dict[str, Any]:
     }
 
 
+def parse_ytdlp_error(stderr: str, url: str) -> str:
+    """
+    Parse yt-dlp stderr output to extract user-friendly error messages.
+    
+    Args:
+        stderr: The stderr output from yt-dlp
+        url: The URL that was being processed
+        
+    Returns:
+        A user-friendly error message
+    """
+    if not stderr:
+        return f"Failed to process video from URL: {url}"
+    
+    stderr_lower = stderr.lower()
+    
+    # Check for common error patterns
+    if "404" in stderr or "not found" in stderr_lower or "does not exist" in stderr_lower:
+        return f"Video not found (404): The video at {url} does not exist or has been removed."
+    
+    if "unavailable" in stderr_lower or "unavailable" in stderr:
+        return f"Video unavailable: The video at {url} is unavailable. It may be private, deleted, or restricted."
+    
+    if "private" in stderr_lower:
+        return f"Video is private: The video at {url} is private and cannot be accessed."
+    
+    if "age-restricted" in stderr_lower or "age restricted" in stderr_lower:
+        return f"Age-restricted video: The video at {url} is age-restricted and may require authentication."
+    
+    if "geoblocked" in stderr_lower or "geoblock" in stderr_lower:
+        return f"Geoblocked video: The video at {url} is not available in your region."
+    
+    if "copyright" in stderr_lower or "copyright" in stderr:
+        return f"Copyright restriction: The video at {url} cannot be accessed due to copyright restrictions."
+    
+    if "sign in" in stderr_lower or "login" in stderr_lower:
+        return f"Authentication required: The video at {url} requires sign-in. Consider using a cookies file."
+    
+    # Extract the first meaningful error line (usually contains the actual error message)
+    lines = stderr.strip().split('\n')
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith('[') and 'error' in line.lower():
+            # Return the first error line that seems meaningful
+            if len(line) > 20:  # Skip very short lines
+                return f"Error processing {url}: {line}"
+    
+    # Fallback: return the last non-empty line or the whole stderr
+    error_lines = [line.strip() for line in lines if line.strip()]
+    if error_lines:
+        last_line = error_lines[-1]
+        # Don't include the full stderr if it's too verbose
+        if len(last_line) < 500:
+            return f"Error processing {url}: {last_line}"
+    
+    return f"Failed to process video from {url}. yt-dlp error: {stderr[:200]}..."
+
+
 def get_video_filename(url: str, ext: str = "mp4") -> str:
     """Generate video filename based on format or default."""
     if VIDEO_FILENAME_FORMAT:
@@ -285,9 +343,18 @@ def download_video(
             )
             # Parse JSON metadata
             metadata = json.loads(metadata_result.stdout)
-        except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
-            # If metadata extraction fails, continue with download but log warning
-            print(f"Warning: Failed to extract metadata: {e}")
+        except subprocess.CalledProcessError as e:
+            # If metadata extraction fails, it likely means the video is unavailable
+            # Return a clear error message instead of continuing
+            error_msg = parse_ytdlp_error(e.stderr, url)
+            return {
+                "status": "error",
+                "error": error_msg,
+                "url": url
+            }
+        except json.JSONDecodeError as e:
+            # If we can't parse metadata JSON, log warning but continue with download
+            print(f"Warning: Failed to parse metadata JSON: {e}")
 
         # Build output template
         if VIDEO_FILENAME_FORMAT:
@@ -376,9 +443,11 @@ def download_video(
         return response
 
     except subprocess.CalledProcessError as e:
+        error_msg = parse_ytdlp_error(e.stderr, url if 'url' in locals() else "unknown URL")
         return {
             "status": "error",
-            "error": f"Download failed: {e.stderr or str(e)}"
+            "error": error_msg,
+            "url": url if 'url' in locals() else None
         }
     except Exception as e:
         return {
