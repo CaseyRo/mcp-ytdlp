@@ -1,0 +1,22 @@
+services:
+    ytdlp-mcp:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        image: ytdlp-mcp:latest
+        container_name: ytdlp-mcp
+        restart: unless-stopped
+        volumes:
+            - /mnt/data/AI/n8n:/data
+        environment:
+            - OUTPUT_DIRECTORY=/data
+            - CLEANUP_RETENTION_DAYS=7
+            - VIDEO_FILENAME_FORMAT=%(id)s.%(ext)s
+        ports:
+            - "8000:8000"
+        networks:
+            - ytdlp-network
+
+networks:
+    ytdlp-network:
+        driver: bridge

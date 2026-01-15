@@ -1,23 +1,21 @@
-# Media Processing Sidecar Service
+# YTDLP MCP Service
 
-A FastMCP-based microservice for downloading videos, converting formats, extracting screenshots, and managing media files. Designed to work alongside n8n workflows as a sidecar container.
+A FastMCP-based microservice for downloading videos, converting formats, and managing media files. Standalone service accessible via MCP protocol over HTTP.
 
 ## Overview
 
 This service provides MCP (Model Context Protocol) tools for media processing operations:
-- **Video Download**: Download videos from URLs using yt-dlp with optional authentication
+- **Video Download**: Download videos from URLs using yt-dlp with optional authentication (includes video metadata and thumbnails)
 - **Video Conversion**: Convert videos between formats using FFmpeg
-- **Screenshot Extraction**: Extract frames from videos at specific timestamps
 - **File Cleanup**: Automatic and manual cleanup of old files
 
-The service runs as a Docker container alongside n8n, sharing a volume for file exchange while keeping video processing isolated from workflow orchestration.
+The service runs as a standalone Docker container, providing MCP tools for media processing operations via HTTP.
 
 ## Quick Start
 
 ### Prerequisites
 
 - Docker and Docker Compose installed
-- Existing n8n setup (optional, but designed to work alongside n8n)
 - Network access for downloading videos
 
 ### Installation
@@ -31,7 +29,7 @@ The service runs as a Docker container alongside n8n, sharing a volume for file 
 2. **Update docker-compose.yaml** with your volume paths:
    ```yaml
    volumes:
-     - /mnt/data/AI/n8n:/data  # Update to match your n8n volume
+     - /path/to/your/data:/data  # Update to your desired data directory
    ```
 
 3. **Configure environment variables** (see Configuration section below)
@@ -43,13 +41,13 @@ The service runs as a Docker container alongside n8n, sharing a volume for file 
 
 5. **Verify the service is running**:
    ```bash
-   docker-compose logs media-sidecar
+   docker-compose logs ytdlp-mcp
    ```
 
 ### Basic Usage
 
 The MCP server is accessible via HTTP on port 8000. Connect your MCP client to:
-- `http://media-sidecar:8000` (from within Docker network)
+- `http://ytdlp-mcp:8000` (from within Docker network)
 - `http://localhost:8000` (from host machine)
 
 ## Configuration
@@ -60,7 +58,7 @@ All configuration is done via environment variables in `docker-compose.yaml`:
 
 #### `OUTPUT_DIRECTORY`
 - **Default**: `/data`
-- **Description**: Directory where all downloaded videos, converted videos, and screenshots are saved
+- **Description**: Directory where all downloaded videos and converted videos are saved
 - **Example**:
   ```yaml
   environment:
@@ -97,37 +95,30 @@ All configuration is done via environment variables in `docker-compose.yaml`:
     - VIDEO_FILENAME_FORMAT=%(uploader)s - %(id)s.%(ext)s
   ```
 
-#### `SCREENSHOT_FILENAME_FORMAT`
-- **Default**: `{video_filename}_{timestamp}.jpg`
-- **Description**: Filename format for screenshot files
-- **Format Variables**: `%(video_filename)s`, `%(timestamp)s`, or `{video_filename}`, `{timestamp}`
-- **Example**:
-  ```yaml
-  environment:
-    - SCREENSHOT_FILENAME_FORMAT=screenshot_%(video_filename)s_%(timestamp)s.jpg
-  ```
-
 ### Docker Compose Configuration
 
 Example `docker-compose.yaml` configuration:
 
 ```yaml
 services:
-  media-sidecar:
+  ytdlp-mcp:
     build: .
-    container_name: n8n-media-sidecar
+    container_name: ytdlp-mcp
     restart: unless-stopped
     volumes:
       - /mnt/data/AI/n8n:/data
     environment:
       - OUTPUT_DIRECTORY=/data
       - CLEANUP_RETENTION_DAYS=7
-      - VIDEO_FILENAME_FORMAT=%(title)s.%(ext)s
-      - SCREENSHOT_FILENAME_FORMAT=%(video_filename)s_%(timestamp)s.jpg
+      - VIDEO_FILENAME_FORMAT=%(id)s.%(ext)s
     ports:
       - "8000:8000"
     networks:
-      - n8n-network
+      - ytdlp-network
+
+networks:
+  ytdlp-network:
+    driver: bridge
 ```
 
 ## MCP Tools Reference
@@ -153,9 +144,62 @@ Downloads a video from a URL using yt-dlp.
 {
   "status": "success",
   "filename": "video.mp4",
-  "path": "/data/video.mp4"
+  "path": "/data/video.mp4",
+  "metadata": {
+    "id": "dQw4w9WgXcQ",
+    "title": "Video Title",
+    "description": "Video description...",
+    "duration": 212,
+    "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg",
+    "thumbnails": [
+      {
+        "url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg",
+        "width": 120,
+        "height": 90
+      },
+      {
+        "url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+        "width": 480,
+        "height": 360
+      }
+    ],
+    "uploader": "Channel Name",
+    "uploader_id": "channel_id",
+    "channel": "Channel Name",
+    "channel_id": "channel_id",
+    "upload_date": "20230101",
+    "view_count": 1234567,
+    "like_count": 12345,
+    "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+  },
+  "yt_dlp": {
+    "yt_dlp_version": "2025.12.08",
+    "latest_available_version": "2025.12.10",
+    "update_available": true
+  }
 }
 ```
+
+**Metadata Fields**:
+- `id`: Video ID
+- `title`: Video title
+- `description`: Video description
+- `duration`: Duration in seconds
+- `thumbnail`: Primary thumbnail URL
+- `thumbnails`: Array of thumbnail objects with different resolutions (each has `url`, `width`, `height`)
+- `uploader`: Uploader/channel name
+- `uploader_id`: Uploader ID
+- `channel`: Channel name
+- `channel_id`: Channel ID
+- `upload_date`: Upload date in YYYYMMDD format
+- `view_count`: View count (if available)
+- `like_count`: Like count (if available)
+- `webpage_url`: URL to the video page
+
+**Version Information** (`yt_dlp` object):
+- `yt_dlp_version`: Currently installed version of yt-dlp
+- `latest_available_version`: Latest available version from PyPI (checked periodically)
+- `update_available`: Boolean indicating if a newer version is available
 
 **Error Response**:
 ```json
@@ -190,31 +234,6 @@ Converts a video file to a different format using FFmpeg.
 }
 ```
 
-### `extract_screenshot`
-
-Extracts a single frame from a video at a specified timestamp.
-
-**Parameters**:
-- `video_filename` (required, string): Name of the video file
-- `timestamp` (required, string): Timestamp in HH:MM:SS format (e.g., "00:01:30")
-
-**Example Request**:
-```json
-{
-  "video_filename": "video.mp4",
-  "timestamp": "00:01:30"
-}
-```
-
-**Example Response**:
-```json
-{
-  "status": "success",
-  "screenshot_filename": "video_00130.jpg",
-  "path": "/data/video_00130.jpg"
-}
-```
-
 ### `cleanup_files`
 
 Manually triggers cleanup of old files.
@@ -244,7 +263,7 @@ The MCP server is accessible via HTTP transport on port 8000, allowing network-b
 
 ### HTTP Endpoint
 
-- **Docker Network**: `http://media-sidecar:8000`
+- **Docker Network**: `http://ytdlp-mcp:8000`
 - **Host Machine**: `http://localhost:8000`
 
 ### Claude Desktop
@@ -254,7 +273,7 @@ To connect Claude Desktop to this MCP server, add the following to your Claude D
 ```json
 {
   "mcpServers": {
-    "media-sidecar": {
+    "ytdlp-mcp": {
       "url": "http://localhost:8000",
       "transport": "http"
     }
@@ -265,7 +284,7 @@ To connect Claude Desktop to this MCP server, add the following to your Claude D
 ### Other MCP Clients
 
 The service uses standard MCP protocol over HTTP, making it compatible with any MCP client that supports HTTP transport. Configure your client to connect to:
-- `http://media-sidecar:8000` (from within Docker network)
+- `http://ytdlp-mcp:8000` (from within Docker network)
 - `http://localhost:8000` (from host)
 
 ## Troubleshooting
@@ -273,8 +292,8 @@ The service uses standard MCP protocol over HTTP, making it compatible with any 
 ### Common Issues
 
 #### Container won't start
-- **Check Docker logs**: `docker-compose logs media-sidecar`
-- **Verify volume paths exist**: Ensure `/mnt/data/AI/n8n` (or your configured path) exists
+- **Check Docker logs**: `docker-compose logs ytdlp-mcp`
+- **Verify volume paths exist**: Ensure your configured data directory path exists
 - **Check permissions**: Ensure the directory has appropriate read/write permissions
 - **Verify environment variable syntax**: Check for typos in docker-compose.yaml
 
@@ -284,10 +303,10 @@ The service uses standard MCP protocol over HTTP, making it compatible with any 
 - **Review yt-dlp errors**: Check container logs for detailed error messages
 - **Test URL manually**: Verify the video URL is accessible
 
-#### Files not accessible in n8n
-- **Verify shared volume**: Ensure both containers mount the same volume path
-- **Check file permissions**: Files should be readable by n8n user
-- **Verify OUTPUT_DIRECTORY**: Ensure it matches the n8n volume mount point
+#### Files not accessible
+- **Verify volume mount**: Ensure the volume path in docker-compose.yaml is correct
+- **Check file permissions**: Files should be readable/writable
+- **Verify OUTPUT_DIRECTORY**: Ensure it matches the volume mount point in docker-compose.yaml
 - **Check file paths**: Use the exact filename returned by the MCP tool
 
 #### MCP client can't connect
@@ -300,7 +319,7 @@ The service uses standard MCP protocol over HTTP, making it compatible with any 
 
 **View container logs**:
 ```bash
-docker-compose logs -f media-sidecar
+docker-compose logs -f ytdlp-mcp
 ```
 
 **Check container status**:
@@ -315,12 +334,12 @@ curl http://localhost:8000
 
 **Execute commands in container**:
 ```bash
-docker-compose exec media-sidecar /bin/bash
+docker-compose exec ytdlp-mcp /bin/bash
 ```
 
 **Check file permissions**:
 ```bash
-docker-compose exec media-sidecar ls -la /data
+docker-compose exec ytdlp-mcp ls -la /data
 ```
 
 ## Examples
@@ -334,13 +353,8 @@ docker-compose exec media-sidecar ls -la /data
    }
    ```
 
-2. **Extract a screenshot at 1 minute**:
-   ```json
-   {
-     "video_filename": "downloaded_video.mp4",
-     "timestamp": "00:01:00"
-   }
-   ```
+2. **Access video metadata** (included in download response):
+   The download response includes a `metadata` object with thumbnail URLs, video information, and statistics.
 
 3. **Convert to WebM format**:
    ```json
@@ -389,27 +403,21 @@ environment:
   - VIDEO_FILENAME_FORMAT=%(title)s.%(ext)s
 ```
 
-**Screenshot with video metadata**:
-```yaml
-environment:
-  - SCREENSHOT_FILENAME_FORMAT=%(video_filename)s_frame_%(timestamp)s.jpg
-```
-
 ## Architecture
 
-This service follows the **sidecar pattern**, running as a separate container alongside n8n:
+This service runs as a standalone Docker container providing MCP tools for media processing:
 
-- **Isolation**: Video processing runs in a separate container, preventing CPU-intensive operations from impacting n8n workflows
-- **Shared Storage**: Both containers share a volume (`/data`) for file exchange
+- **Isolation**: Video processing runs in its own container, isolated from other services
+- **Persistent Storage**: Volume mount (`/data`) for file storage and access
 - **Network Communication**: MCP protocol over HTTP enables LLM integration
 - **Automatic Cleanup**: Background thread removes old files based on configurable retention period
 
 ### Benefits
 
-- **Stability**: Video processing won't crash n8n workflows
-- **Maintainability**: Update n8n and media tools independently
+- **Standalone**: No dependencies on other services
 - **Flexibility**: Configurable via environment variables
 - **Integration**: Direct LLM access via MCP protocol
+- **Maintainability**: Simple, focused service for media processing operations
 
 ## License
 

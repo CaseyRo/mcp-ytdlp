@@ -20,4 +20,3 @@ RUN mkdir -p /data
 
 # Run the server
 CMD ["python", "main.py"]
-
