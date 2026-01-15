@@ -33,7 +33,10 @@ fi
 echo "✓ Server is reachable"
 echo ""
 
-# Initialize MCP session (FastMCP may require a session ID header)
+# Preferred Accept header (JSON-only for non-streaming HTTP mode)
+ACCEPT_HEADER="application/json"
+
+# Initialize MCP session (not required in stateless JSON mode, but harmless)
 MCP_SESSION_ID=""
 INIT_ENDPOINT="/mcp"
 INIT_PAYLOAD='{
@@ -52,7 +55,7 @@ INIT_TMP_BODY=$(mktemp)
 
 curl -s -D "$INIT_TMP_HEADERS" -o "$INIT_TMP_BODY" -X POST "${SERVER_URL}${INIT_ENDPOINT}" \
     -H "Content-Type: application/json" \
-    -H "Accept: application/json, text/event-stream" \
+    -H "Accept: ${ACCEPT_HEADER}" \
     -d "$INIT_PAYLOAD" >/dev/null 2>&1
 
 MCP_SESSION_ID=$(grep -i '^mcp-session-id:' "$INIT_TMP_HEADERS" | head -n 1 | sed 's/^[^:]*:[[:space:]]*//;s/[[:space:]]*$//')
@@ -150,7 +153,7 @@ call_mcp_tool() {
         # Format 1: Standard JSON-RPC 2.0
         response=$(curl -s -X POST "${SERVER_URL}${endpoint}" \
             -H "Content-Type: application/json" \
-            -H "Accept: application/json, text/event-stream" \
+            -H "Accept: ${ACCEPT_HEADER}" \
             "${SESSION_HEADER[@]}" \
             -d "{
                 \"jsonrpc\": \"2.0\",
@@ -172,7 +175,7 @@ call_mcp_tool() {
         # Format 2: Simpler POST format
         response=$(curl -s -X POST "${SERVER_URL}${endpoint}" \
             -H "Content-Type: application/json" \
-            -H "Accept: application/json, text/event-stream" \
+            -H "Accept: ${ACCEPT_HEADER}" \
             "${SESSION_HEADER[@]}" \
             -d "{
                 \"tool\": \"${tool_name}\",
@@ -189,7 +192,7 @@ call_mcp_tool() {
         # Format 3: Direct tool call
         response=$(curl -s -X POST "${SERVER_URL}${endpoint}/${tool_name}" \
             -H "Content-Type: application/json" \
-            -H "Accept: application/json, text/event-stream" \
+            -H "Accept: ${ACCEPT_HEADER}" \
             "${SESSION_HEADER[@]}" \
             -d "${params_json}" 2>/dev/null || echo "")
         

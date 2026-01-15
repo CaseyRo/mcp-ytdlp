@@ -584,9 +584,18 @@ if __name__ == "__main__":
     # We'll use uvicorn to serve it over HTTP
     try:
         # Try FastMCP's built-in run method if available
-        mcp.run(host="0.0.0.0", port=8000, transport="http")
+        mcp.run(
+            host="0.0.0.0",
+            port=8000,
+            transport="http",
+            json_response=True,
+            stateless_http=True,
+        )
     except (AttributeError, TypeError):
         # Fallback: use uvicorn directly with the MCP app
         # FastMCP should expose an ASGI application
-        app = mcp.create_app() if hasattr(mcp, 'create_app') else mcp
+        if hasattr(mcp, "http_app"):
+            app = mcp.http_app(transport="http", json_response=True, stateless_http=True)
+        else:
+            app = mcp.create_app() if hasattr(mcp, "create_app") else mcp
         uvicorn.run(app, host="0.0.0.0", port=8000)
