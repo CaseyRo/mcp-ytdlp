@@ -42,7 +42,8 @@ INIT_PAYLOAD='{
   "method": "initialize",
   "params": {
     "protocolVersion": "2024-11-05",
-    "clientInfo": { "name": "ytdlp-mcp-test", "version": "1.0" }
+    "clientInfo": { "name": "ytdlp-mcp-test", "version": "1.0" },
+    "capabilities": {}
   }
 }'
 
@@ -63,11 +64,15 @@ fi
 
 rm -f "$INIT_TMP_HEADERS" "$INIT_TMP_BODY"
 
+SESSION_HEADER=()
 if [ -n "$MCP_SESSION_ID" ]; then
-    echo "✓ MCP session initialized"
+    echo "✓ MCP session initialized (ID: ${MCP_SESSION_ID})"
     echo ""
+    SESSION_HEADER=(-H "MCP-Session-Id: ${MCP_SESSION_ID}")
 else
-    echo "Warning: MCP session ID not found. Requests may fail if server requires sessions." >&2
+    echo "Warning: MCP session ID not found. Init response:" >&2
+    cat "$INIT_TMP_BODY" >&2
+    echo "" >&2
     echo ""
 fi
 
@@ -146,7 +151,7 @@ call_mcp_tool() {
         response=$(curl -s -X POST "${SERVER_URL}${endpoint}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
-            $( [ -n "${MCP_SESSION_ID:-}" ] && printf '%s' "-H MCP-Session-Id: ${MCP_SESSION_ID}" ) \
+            "${SESSION_HEADER[@]}" \
             -d "{
                 \"jsonrpc\": \"2.0\",
                 \"id\": 1,
@@ -168,7 +173,7 @@ call_mcp_tool() {
         response=$(curl -s -X POST "${SERVER_URL}${endpoint}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
-            $( [ -n "${MCP_SESSION_ID:-}" ] && printf '%s' "-H MCP-Session-Id: ${MCP_SESSION_ID}" ) \
+            "${SESSION_HEADER[@]}" \
             -d "{
                 \"tool\": \"${tool_name}\",
                 \"arguments\": ${params_json}
@@ -185,7 +190,7 @@ call_mcp_tool() {
         response=$(curl -s -X POST "${SERVER_URL}${endpoint}/${tool_name}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
-            $( [ -n "${MCP_SESSION_ID:-}" ] && printf '%s' "-H MCP-Session-Id: ${MCP_SESSION_ID}" ) \
+            "${SESSION_HEADER[@]}" \
             -d "${params_json}" 2>/dev/null || echo "")
         
         if [ -n "$response" ] && echo "$response" | grep -qE "(status|result|error)"; then
@@ -233,33 +238,48 @@ EOF
         LAST_ENDPOINT_USED="${MCP_ENDPOINT_USED}"
     fi
     
-    if echo "$response" | grep -q "error" && ! echo "$response" | grep -q "\"status\": \"success\""; then
+    # Handle SSE responses (extract the last JSON "data:" line if present)
+    response_json=$(echo "$response" | sed -n 's/^data: //p' | tail -n 1)
+    if [ -z "$response_json" ]; then
+        response_json="$response"
+    fi
+
+    if echo "$response_json" | grep -q "error" && ! echo "$response_json" | grep -q "\"status\": \"success\""; then
         echo "Error calling tool:"
-        format_json "$response"
+        format_json "$response_json"
         echo ""
         continue
     fi
     
     echo "Response:"
-    format_json "$response"
+    format_json "$response_json"
     echo ""
     
     # Extract and display metadata summary if available
-    if echo "$response" | grep -q "metadata"; then
+    if echo "$response_json" | grep -q "metadata"; then
         echo "Metadata Summary:"
         if [ "$JSON_FORMATTER" = "jq" ]; then
-            echo "$response" | jq -r '.metadata // .result.metadata // {} | 
-                "  Title: \(.title // "N/A")
-  Duration: \(.duration // "N/A")s
-  Uploader: \(.uploader // "N/A")
-  View Count: \(.view_count // "N/A")
-  Thumbnail: \(.thumbnail // "N/A")"' 2>/dev/null || echo "  (Could not parse metadata)"
+            echo "$response_json" | jq -r '
+                .metadata
+                // .result.metadata
+                // .result.structuredContent.metadata
+                // (try (.result.content[0].text | fromjson | .metadata) catch {})
+                // {} |
+                "  Title: \(.title // "N/A")\n  Duration: \(.duration // "N/A")s\n  Uploader: \(.uploader // "N/A")\n  View Count: \(.view_count // "N/A")\n  Thumbnail: \(.thumbnail // "N/A")"
+            ' 2>/dev/null || echo "  (Could not parse metadata)"
         elif [ "$JSON_FORMATTER" = "python3" ]; then
-            echo "$response" | python3 -c "
+            echo "$response_json" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    meta = data.get('metadata') or data.get('result', {}).get('metadata', {})
+    meta = data.get('metadata') or data.get('result', {}).get('metadata') or data.get('result', {}).get('structuredContent', {}).get('metadata')
+    if not meta:
+        content = data.get('result', {}).get('content', [])
+        if content and isinstance(content, list):
+            try:
+                meta = json.loads(content[0].get('text', '{}')).get('metadata', {})
+            except Exception:
+                meta = {}
     print(f\"  Title: {meta.get('title', 'N/A')}\")
     print(f\"  Duration: {meta.get('duration', 'N/A')}s\")
     print(f\"  Uploader: {meta.get('uploader', 'N/A')}\")

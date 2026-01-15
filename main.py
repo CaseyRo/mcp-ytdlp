@@ -285,6 +285,8 @@ def download_video(
         Dictionary with status, filename, path, and metadata (if available)
     """
     try:
+        # Basic request logging for container logs
+        print(f"[download_video] Request received")
         # Extract URL from various possible locations (MCP client may nest it)
         if not url:
             if body and isinstance(body, dict):
@@ -298,6 +300,8 @@ def download_video(
                 "status": "error",
                 "error": "URL is required. Provide 'url' parameter or 'body.recipe.url'"
             }
+        
+        print(f"[download_video] URL: {url}")
 
         # Extract cookies_file from various possible locations
         if not cookies_file or cookies_file == "[null]":
@@ -310,6 +314,9 @@ def download_video(
         # Clean up cookies_file value
         if cookies_file == "[null]" or cookies_file == "null":
             cookies_file = None
+        
+        if cookies_file:
+            print("[download_video] cookies_file provided")
 
         # Determine output directory (parameter takes precedence over env var)
         output_dir = output_directory if output_directory else OUTPUT_DIR
@@ -347,6 +354,7 @@ def download_video(
             # If metadata extraction fails, it likely means the video is unavailable
             # Return a clear error message instead of continuing
             error_msg = parse_ytdlp_error(e.stderr, url)
+            print(f"[download_video] metadata extraction failed: {error_msg}")
             return {
                 "status": "error",
                 "error": error_msg,
@@ -379,6 +387,7 @@ def download_video(
 
         command.append(url)
 
+        print(f"[download_video] Starting download")
         # Run yt-dlp to download
         result = subprocess.run(
             command,
@@ -406,6 +415,8 @@ def download_video(
         video_extensions = {'.mp4', '.webm', '.avi', '.mov', '.mkv', '.flv', '.m4v'}
         if most_recent.suffix.lower() not in video_extensions:
             raise Exception(f"Downloaded file is not a video: {most_recent.name}")
+        
+        print(f"[download_video] Download complete: {most_recent.name}")
 
         # Prepare response with metadata
         response = {
@@ -444,12 +455,14 @@ def download_video(
 
     except subprocess.CalledProcessError as e:
         error_msg = parse_ytdlp_error(e.stderr, url if 'url' in locals() else "unknown URL")
+        print(f"[download_video] Download failed: {error_msg}")
         return {
             "status": "error",
             "error": error_msg,
             "url": url if 'url' in locals() else None
         }
     except Exception as e:
+        print(f"[download_video] Unexpected error: {e}")
         return {
             "status": "error",
             "error": str(e)
