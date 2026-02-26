@@ -1,5 +1,5 @@
 # Use a lightweight Python image
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 # Install system dependencies (FFmpeg is crucial)
 RUN apt-get update && \
@@ -9,8 +9,9 @@ RUN apt-get update && \
 # Set work directory
 WORKDIR /app
 
-# Install Python dependencies
-RUN pip install --no-cache-dir fastmcp uvicorn yt-dlp
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application code
 COPY main.py .

@@ -26,7 +26,7 @@ VIDEO_FILENAME_FORMAT = os.getenv("VIDEO_FILENAME_FORMAT")
 Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
 # Initialize FastMCP server
-mcp = FastMCP("Media Processing Sidecar")
+mcp = FastMCP("Media Processing Sidecar", stateless_http=True)
 
 # Progress tracking storage (in-memory, keyed by task ID)
 progress_store = {}
@@ -576,26 +576,4 @@ def cleanup_files(
 
 
 if __name__ == "__main__":
-    # Run FastMCP server with HTTP transport
-    # FastMCP can be run directly with uvicorn
-    import uvicorn
-
-    # FastMCP exposes an ASGI app via the mcp object
-    # We'll use uvicorn to serve it over HTTP
-    try:
-        # Try FastMCP's built-in run method if available
-        mcp.run(
-            host="0.0.0.0",
-            port=8000,
-            transport="http",
-            json_response=True,
-            stateless_http=True,
-        )
-    except (AttributeError, TypeError):
-        # Fallback: use uvicorn directly with the MCP app
-        # FastMCP should expose an ASGI application
-        if hasattr(mcp, "http_app"):
-            app = mcp.http_app(transport="http", json_response=True, stateless_http=True)
-        else:
-            app = mcp.create_app() if hasattr(mcp, "create_app") else mcp
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+    mcp.run(transport="http", host="0.0.0.0", port=8000)
