@@ -1,5 +1,15 @@
 # YTDLP MCP Service
 
+[![PyPI](https://img.shields.io/pypi/v/mcp-ytdlp)](https://pypi.org/project/mcp-ytdlp/)
+
+## Installation
+
+```bash
+pip install mcp-ytdlp
+# or run directly without installing:
+uvx mcp-ytdlp
+```
+
 A FastMCP-based microservice for downloading videos, converting formats, and managing media files. Standalone service accessible via MCP protocol over HTTP.
 
 ## Overview
