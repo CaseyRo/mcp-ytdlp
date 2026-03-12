@@ -1,22 +1,24 @@
 services:
-    ytdlp-mcp:
-        build:
-            context: .
-            dockerfile: Dockerfile
-        image: ytdlp-mcp:latest
-        container_name: ytdlp-mcp
-        restart: unless-stopped
-        volumes:
-            - /mnt/data/AI/n8n:/data
-        environment:
-            - OUTPUT_DIRECTORY=/data
-            - CLEANUP_RETENTION_DAYS=7
-            - VIDEO_FILENAME_FORMAT=%(id)s.%(ext)s
-        ports:
-            - "8128:8000"
-        networks:
-            - ytdlp-network
+  mcp-ytdlp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-ytdlp
+    ports:
+      - "8000:8000"
+    environment:
+      OUTPUT_DIRECTORY: ${OUTPUT_DIRECTORY:-/data}
+      CLEANUP_RETENTION_DAYS: ${CLEANUP_RETENTION_DAYS:-7}
+      VIDEO_FILENAME_FORMAT: ${VIDEO_FILENAME_FORMAT:-%(id)s.%(ext)s}
+    volumes:
+      - ${OUTPUT_HOST_DIR:-ytdlp_output}:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
-networks:
-    ytdlp-network:
-        driver: bridge
+volumes:
+  ytdlp_output:
