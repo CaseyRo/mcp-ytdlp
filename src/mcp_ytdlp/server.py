@@ -4,6 +4,7 @@ Media Processing Sidecar Service
 FastMCP server for video download, conversion, and cleanup
 """
 
+import hmac
 import os
 import subprocess
 import uuid
@@ -25,8 +26,51 @@ VIDEO_FILENAME_FORMAT = os.getenv("VIDEO_FILENAME_FORMAT")
 # Ensure output directory exists
 Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
+# Build auth (optional — only if KEYCLOAK_ISSUER is set)
+_auth = None
+_keycloak_issuer = os.environ.get("KEYCLOAK_ISSUER")
+if _keycloak_issuer:
+    from fastmcp.server.auth import (
+        AccessToken,
+        JWTProvider,
+        MultiAuth,
+        TokenVerifier,
+    )
+
+    class _BearerTokenVerifier(TokenVerifier):
+        """Validates incoming requests against a static API key."""
+
+        def __init__(self, api_key: str):
+            super().__init__()
+            self._api_key = api_key
+
+        async def verify_token(self, token: str) -> AccessToken | None:
+            if not hmac.compare_digest(token, self._api_key):
+                return None
+            return AccessToken(
+                token=token,
+                client_id="mcp-ytdlp-bearer",
+                scopes=["all"],
+            )
+
+    jwt_auth = JWTProvider(
+        issuer=_keycloak_issuer,
+        audience=os.environ.get("KEYCLOAK_AUDIENCE", "mcp-ytdlp"),
+    )
+
+    _api_key = os.environ.get("MCP_API_KEY")
+    if _api_key:
+        _bearer = _BearerTokenVerifier(_api_key)
+        _auth = MultiAuth(server=jwt_auth, verifiers=[_bearer])
+    else:
+        _auth = MultiAuth(server=jwt_auth)
+
+    print(f"[auth] Keycloak JWT auth enabled (issuer={_keycloak_issuer})")
+else:
+    print("[auth] No KEYCLOAK_ISSUER set — running without authentication")
+
 # Initialize FastMCP server
-mcp = FastMCP("Media Processing Sidecar", stateless_http=True)
+mcp = FastMCP("Media Processing Sidecar", stateless_http=True, auth=_auth)
 
 # Progress tracking storage (in-memory, keyed by task ID)
 progress_store = {}
