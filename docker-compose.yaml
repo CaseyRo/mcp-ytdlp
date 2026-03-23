@@ -14,7 +14,7 @@ services:
       - ${OUTPUT_HOST_DIR:-ytdlp_output}:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(3); s.connect(('localhost',8000)); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 3
