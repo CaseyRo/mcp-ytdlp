@@ -70,7 +70,7 @@ else:
     print("[auth] No KEYCLOAK_ISSUER set — running without authentication")
 
 # Initialize FastMCP server
-mcp = FastMCP("Media Processing Sidecar", stateless_http=True, auth=_auth)
+mcp = FastMCP("Media Processing Sidecar", auth=_auth)
 
 # Progress tracking storage (in-memory, keyed by task ID)
 progress_store = {}
@@ -589,7 +589,7 @@ def cleanup_files(
 
 
 def main():
-    mcp.run(transport="http", host="0.0.0.0", port=8000)
+    mcp.run(transport="http", host="0.0.0.0", port=8000, stateless_http=True)
 
 
 if __name__ == "__main__":
