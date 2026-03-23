@@ -14,7 +14,7 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Any, Dict, Tuple
+from typing import Annotated, Literal, Optional, Any, Dict, Tuple
 
 from fastmcp import FastMCP
 
@@ -301,64 +301,29 @@ cleanup_thread.start()
 
 @mcp.tool()
 def download_video(
-    url: str = None,
+    url: Annotated[str, "Video URL to download (YouTube, Vimeo, etc.)"],
     cookies_file: Optional[str] = None,
     output_directory: Optional[str] = None,
-    body: Optional[Dict[str, Any]] = None,
-    recipe: Optional[Dict[str, Any]] = None,
-    headers: Optional[Dict[str, Any]] = None,
-    params: Optional[Dict[str, Any]] = None,
-    query: Optional[Dict[str, Any]] = None,
-    webhookUrl: Optional[str] = None,
-    executionMode: Optional[str] = None,
-    ts_baseurl: Optional[str] = None,
-    toolCallId: Optional[str] = None
 ) -> dict:
     """
     Download a video from a URL using yt-dlp.
 
     Args:
-        url: Video URL to download (can be in body.recipe.url if nested)
+        url: Video URL to download
         cookies_file: Optional path to cookies file for authentication
-        output_directory: Optional output directory path. If not provided, uses OUTPUT_DIRECTORY environment variable or default /data
-        body: Optional body dict containing nested parameters
-        headers, params, query, recipe, webhookUrl, executionMode, ts_baseurl, toolCallId:
-            Additional parameters (ignored, for MCP client compatibility)
+        output_directory: Optional output directory path. Defaults to OUTPUT_DIRECTORY env var or /data.
 
     Returns:
         Dictionary with status, filename, path, and metadata (if available)
     """
     try:
-        # Basic request logging for container logs
         print(f"[download_video] Request received")
-        # Extract URL from various possible locations (MCP client may nest it)
-        if not url:
-            if body and isinstance(body, dict):
-                if 'recipe' in body and isinstance(body['recipe'], dict):
-                    url = body['recipe'].get('url')
-                elif 'url' in body:
-                    url = body.get('url')
-
-        if not url:
-            return {
-                "status": "error",
-                "error": "URL is required. Provide 'url' parameter or 'body.recipe.url'"
-            }
-        
         print(f"[download_video] URL: {url}")
 
-        # Extract cookies_file from various possible locations
-        if not cookies_file or cookies_file == "[null]":
-            if body and isinstance(body, dict):
-                if 'recipe' in body and isinstance(body['recipe'], dict):
-                    cookies_file = body['recipe'].get('cookies_file')
-                elif 'cookies_file' in body:
-                    cookies_file = body.get('cookies_file')
-
         # Clean up cookies_file value
-        if cookies_file == "[null]" or cookies_file == "null":
+        if cookies_file in ("[null]", "null", ""):
             cookies_file = None
-        
+
         if cookies_file:
             print("[download_video] cookies_file provided")
 
@@ -469,9 +434,6 @@ def download_video(
             "path": str(most_recent)
         }
 
-        # Get yt-dlp version information
-        version_info = get_ytdlp_version_info()
-        
         # Include metadata if available
         if metadata:
             # Extract relevant metadata fields
@@ -492,9 +454,6 @@ def download_video(
                 "webpage_url": metadata.get("webpage_url"),
             }
         
-        # Always include version information in response
-        response["yt_dlp"] = version_info
-
         return response
 
     except subprocess.CalledProcessError as e:
@@ -513,56 +472,70 @@ def download_video(
         }
 
 
+ALLOWED_FORMATS = ("mp4", "webm", "avi", "mov", "mkv")
+CODEC_MAP = {
+    "mp4": ("-c:v", "libx264", "-c:a", "aac"),
+    "webm": ("-c:v", "libvpx-vp9", "-c:a", "libopus"),
+    "avi": ("-c:v", "libx264", "-c:a", "aac"),
+    "mov": ("-c:v", "libx264", "-c:a", "aac"),
+    "mkv": ("-c:v", "libx264", "-c:a", "aac"),
+}
+
+
 @mcp.tool()
 def convert_video(
-    video_filename: str,
-    target_format: str,
-    headers: Optional[Dict[str, Any]] = None,
-    params: Optional[Dict[str, Any]] = None,
-    query: Optional[Dict[str, Any]] = None,
-    body: Optional[Dict[str, Any]] = None,
-    webhookUrl: Optional[str] = None,
-    executionMode: Optional[str] = None,
-    ts_baseurl: Optional[str] = None,
-    toolCallId: Optional[str] = None
+    video_filename: Annotated[str, "Name of the video file in the output directory (filename only, no path)"],
+    target_format: Literal["mp4", "webm", "avi", "mov", "mkv"],
 ) -> dict:
     """
     Convert a video file to a different format using FFmpeg.
 
     Args:
-        video_filename: Name of the video file to convert
-        target_format: Target format (mp4, webm, avi, mov, etc.)
-        headers, params, query, body, webhookUrl, executionMode, ts_baseurl, toolCallId:
-            Additional parameters (ignored, for MCP client compatibility)
+        video_filename: Name of the video file to convert (must be in the output directory)
+        target_format: Target format — mp4, webm, avi, mov, or mkv
 
     Returns:
         Dictionary with status, output filename, and path
     """
     try:
+        # Path traversal protection: strip any directory components
+        safe_filename = Path(video_filename).name
+        if safe_filename != video_filename or ".." in video_filename:
+            return {
+                "status": "error",
+                "error": "Invalid filename: must be a plain filename without path separators"
+            }
 
-        input_path = Path(OUTPUT_DIR) / video_filename
+        input_path = (Path(OUTPUT_DIR) / safe_filename).resolve()
+        # Verify resolved path is still inside OUTPUT_DIR
+        if not str(input_path).startswith(str(Path(OUTPUT_DIR).resolve())):
+            return {
+                "status": "error",
+                "error": "Invalid filename: path escapes output directory"
+            }
+
         if not input_path.exists():
             return {
                 "status": "error",
-                "error": f"Video file not found: {video_filename}"
+                "error": f"Video file not found: {safe_filename}"
             }
 
-        # Generate output filename
+        # Generate output filename with format-appropriate codecs
         output_filename = f"{input_path.stem}.{target_format}"
         output_path = Path(OUTPUT_DIR) / output_filename
+        codecs = CODEC_MAP.get(target_format, ("-c:v", "libx264", "-c:a", "aac"))
 
         # FFmpeg conversion command
         command = [
             "ffmpeg",
             "-i", str(input_path),
-            "-c:v", "libx264",  # Video codec
-            "-c:a", "aac",  # Audio codec
+            *codecs,
             "-y",  # Overwrite output file
             str(output_path)
         ]
 
-        # Run FFmpeg
-        subprocess.run(command, check=True, capture_output=True)
+        # Run FFmpeg with timeout to prevent indefinite blocking
+        subprocess.run(command, check=True, capture_output=True, timeout=600)
 
         return {
             "status": "success",
@@ -584,28 +557,24 @@ def convert_video(
 
 @mcp.tool()
 def cleanup_files(
-    retention_days: Optional[int] = None,
-    headers: Optional[Dict[str, Any]] = None,
-    params: Optional[Dict[str, Any]] = None,
-    query: Optional[Dict[str, Any]] = None,
-    body: Optional[Dict[str, Any]] = None,
-    webhookUrl: Optional[str] = None,
-    executionMode: Optional[str] = None,
-    ts_baseurl: Optional[str] = None,
-    toolCallId: Optional[str] = None
+    retention_days: Annotated[Optional[int], "Retention period in days (minimum 1). Defaults to CLEANUP_RETENTION_DAYS env var."] = None,
 ) -> dict:
     """
-    Manually trigger cleanup of old files.
+    Manually trigger cleanup of old video files older than the retention period.
 
     Args:
-        retention_days: Optional retention period in days (overrides CLEANUP_RETENTION_DAYS)
-        headers, params, query, body, webhookUrl, executionMode, ts_baseurl, toolCallId:
-            Additional parameters (ignored, for MCP client compatibility)
+        retention_days: Retention period in days (minimum 1, default from CLEANUP_RETENTION_DAYS env)
 
     Returns:
         Dictionary with status and number of files deleted
     """
     try:
+        # Enforce minimum retention to prevent accidental deletion of all files
+        if retention_days is not None and retention_days < 1:
+            return {
+                "status": "error",
+                "error": "retention_days must be at least 1 to prevent accidental deletion of all files"
+            }
         deleted_count = cleanup_old_files(retention_days)
         return {
             "status": "success",
