@@ -5,11 +5,14 @@ services:
       dockerfile: Dockerfile
     container_name: mcp-ytdlp
     ports:
-      - "${HOST_PORT:-8000}:8000"
+      - "${HOST_PORT:-8718}:8000"
     environment:
       OUTPUT_DIRECTORY: ${OUTPUT_DIRECTORY:-/data}
       CLEANUP_RETENTION_DAYS: ${CLEANUP_RETENTION_DAYS:-7}
       VIDEO_FILENAME_FORMAT: ${VIDEO_FILENAME_FORMAT:-%(id)s.%(ext)s}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-mcp-ytdlp}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
     volumes:
       - ${OUTPUT_HOST_DIR:-ytdlp_output}:/data
     restart: unless-stopped
