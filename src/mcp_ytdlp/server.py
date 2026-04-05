@@ -4,7 +4,6 @@ Media Processing Sidecar Service
 FastMCP server for video download, conversion, and cleanup
 """
 
-import hmac
 import os
 import subprocess
 import uuid
@@ -30,42 +29,19 @@ Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 _auth = None
 _keycloak_issuer = os.environ.get("KEYCLOAK_ISSUER")
 if _keycloak_issuer:
-    from fastmcp.server.auth import (
-        AccessToken,
-        JWTProvider,
-        MultiAuth,
-        TokenVerifier,
-    )
+    _keycloak_client_secret = os.environ.get("KEYCLOAK_CLIENT_SECRET")
+    if _keycloak_client_secret:
+        from .auth import create_auth
 
-    class _BearerTokenVerifier(TokenVerifier):
-        """Validates incoming requests against a static API key."""
-
-        def __init__(self, api_key: str):
-            super().__init__()
-            self._api_key = api_key
-
-        async def verify_token(self, token: str) -> AccessToken | None:
-            if not hmac.compare_digest(token, self._api_key):
-                return None
-            return AccessToken(
-                token=token,
-                client_id="mcp-ytdlp-bearer",
-                scopes=["all"],
-            )
-
-    jwt_auth = JWTProvider(
-        issuer=_keycloak_issuer,
-        audience=os.environ.get("KEYCLOAK_AUDIENCE", "mcp-ytdlp"),
-    )
-
-    _api_key = os.environ.get("MCP_API_KEY")
-    if _api_key:
-        _bearer = _BearerTokenVerifier(_api_key)
-        _auth = MultiAuth(server=jwt_auth, verifiers=[_bearer])
+        _auth = create_auth(
+            base_url=os.environ.get("MCP_BASE_URL", "https://mcp-ytdlp.cdit-dev.de"),
+            keycloak_issuer=_keycloak_issuer,
+            keycloak_client_id=os.environ.get("KEYCLOAK_CLIENT_ID", "mcp-ytdlp"),
+            keycloak_client_secret=_keycloak_client_secret,
+        )
+        print(f"[auth] Keycloak OIDCProxy auth enabled (issuer={_keycloak_issuer})")
     else:
-        _auth = MultiAuth(server=jwt_auth)
-
-    print(f"[auth] Keycloak JWT auth enabled (issuer={_keycloak_issuer})")
+        print("[auth] KEYCLOAK_ISSUER set but KEYCLOAK_CLIENT_SECRET missing — auth disabled")
 else:
     print("[auth] No KEYCLOAK_ISSUER set — running without authentication")
 
