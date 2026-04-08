@@ -266,8 +266,7 @@ def download_video(
     cookies_file: Optional[str] = None,
     output_directory: Optional[str] = None,
 ) -> dict:
-    """
-    Download a video from a URL using yt-dlp.
+    """[media] Download a video from a URL using yt-dlp.
 
     Args:
         url: Video URL to download
@@ -448,8 +447,7 @@ def convert_video(
     video_filename: Annotated[str, "Name of the video file in the output directory (filename only, no path)"],
     target_format: Literal["mp4", "webm", "avi", "mov", "mkv"],
 ) -> dict:
-    """
-    Convert a video file to a different format using FFmpeg.
+    """[media] Convert a video file to a different format using FFmpeg.
 
     Args:
         video_filename: Name of the video file to convert (must be in the output directory)
@@ -520,8 +518,7 @@ def convert_video(
 def cleanup_files(
     retention_days: Annotated[Optional[int], "Retention period in days (minimum 1). Defaults to CLEANUP_RETENTION_DAYS env var."] = None,
 ) -> dict:
-    """
-    Manually trigger cleanup of old video files older than the retention period.
+    """[media] Manually trigger cleanup of old video files older than the retention period.
 
     Args:
         retention_days: Retention period in days (minimum 1, default from CLEANUP_RETENTION_DAYS env)
