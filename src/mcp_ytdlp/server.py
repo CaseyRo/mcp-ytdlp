@@ -25,25 +25,10 @@ VIDEO_FILENAME_FORMAT = os.getenv("VIDEO_FILENAME_FORMAT")
 # Ensure output directory exists
 Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
-# Build auth (optional — only if KEYCLOAK_ISSUER is set)
-_auth = None
-_keycloak_issuer = os.environ.get("KEYCLOAK_ISSUER")
-if _keycloak_issuer:
-    _keycloak_client_secret = os.environ.get("KEYCLOAK_CLIENT_SECRET")
-    if _keycloak_client_secret:
-        from .auth import create_auth
+from .auth import BearerTokenVerifier
 
-        _auth = create_auth(
-            base_url=os.environ.get("MCP_BASE_URL", "https://mcp-ytdlp.cdit-dev.de"),
-            keycloak_issuer=_keycloak_issuer,
-            keycloak_client_id=os.environ.get("KEYCLOAK_CLIENT_ID", "mcp-ytdlp"),
-            keycloak_client_secret=_keycloak_client_secret,
-        )
-        print(f"[auth] Keycloak OIDCProxy auth enabled (issuer={_keycloak_issuer})")
-    else:
-        print("[auth] KEYCLOAK_ISSUER set but KEYCLOAK_CLIENT_SECRET missing — auth disabled")
-else:
-    print("[auth] No KEYCLOAK_ISSUER set — running without authentication")
+_api_key = os.getenv("MCP_API_KEY", "")
+_auth = BearerTokenVerifier(api_key=_api_key) if _api_key else None
 
 # Initialize FastMCP server
 mcp = FastMCP("Media Processing Sidecar", auth=_auth)

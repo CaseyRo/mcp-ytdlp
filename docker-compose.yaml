@@ -10,9 +10,7 @@ services:
       OUTPUT_DIRECTORY: ${OUTPUT_DIRECTORY:-/data}
       CLEANUP_RETENTION_DAYS: ${CLEANUP_RETENTION_DAYS:-7}
       VIDEO_FILENAME_FORMAT: ${VIDEO_FILENAME_FORMAT:-%(id)s.%(ext)s}
-      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-}
-      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-mcp-ytdlp}
-      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+      MCP_API_KEY: ${MCP_API_KEY:-}
     volumes:
       - ${OUTPUT_HOST_DIR:-ytdlp_output}:/data
     restart: unless-stopped

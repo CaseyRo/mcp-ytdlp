@@ -1,36 +1,18 @@
-"""Authentication for the MCP server.
+"""Bearer token authentication for the MCP server."""
 
-Uses OIDCProxy to proxy the OAuth flow to Keycloak using pre-registered
-client credentials. Claude.ai (and Claude Code through it) authenticates
-via the standard authorization_code flow.
+import hmac
 
-Authentication is optional — only enabled when KEYCLOAK_ISSUER is set.
-This keeps local development frictionless while securing production deployments.
-"""
-
-from fastmcp.server.auth.oidc_proxy import OIDCProxy
+from fastmcp.server.auth import AccessToken, TokenVerifier
 
 
-def create_auth(
-    base_url: str,
-    keycloak_issuer: str,
-    keycloak_client_id: str,
-    keycloak_client_secret: str,
-) -> OIDCProxy:
-    """Create the OIDCProxy authentication provider.
+class BearerTokenVerifier(TokenVerifier):
+    """Verify a static bearer token (API key) using timing-safe comparison."""
 
-    Args:
-        base_url: Public URL of this server (e.g. https://mcp-ytdlp.example.com).
-        keycloak_issuer: Keycloak realm issuer URL
-            (e.g. https://auth.cdit-works.de/realms/cdit-mcp).
-        keycloak_client_id: Pre-registered Keycloak client ID.
-        keycloak_client_secret: Keycloak client secret.
-    """
-    config_url = f"{keycloak_issuer}/.well-known/openid-configuration"
+    def __init__(self, api_key: str, **kwargs):
+        super().__init__(**kwargs)
+        self._api_key = api_key
 
-    return OIDCProxy(
-        config_url=config_url,
-        client_id=keycloak_client_id,
-        client_secret=keycloak_client_secret,
-        base_url=base_url,
-    )
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if hmac.compare_digest(token, self._api_key):
+            return AccessToken(token=token, client_id="bearer", scopes=[])
+        return None
