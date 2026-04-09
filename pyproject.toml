@@ -1,6 +1,6 @@
 [project]
 name = "mcp-ytdlp"
-version = "0.1.0"
+version = "0.2.0"
 description = "FastMCP server for downloading and converting videos via yt-dlp"
 readme = "README.md"
 license = {text = "MIT"}
@@ -13,7 +13,7 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
-  "fastmcp>=3.0.2,<4.0.0",
+  "fastmcp>=3.2.2,<4.0.0",
   "yt-dlp>=2026.2.0",
 ]
 

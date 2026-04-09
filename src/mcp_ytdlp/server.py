@@ -520,6 +520,8 @@ def cleanup_files(
 ) -> dict:
     """[media] Manually trigger cleanup of old video files older than the retention period.
 
+    Call only if the user explicitly requests file cleanup — retention is managed automatically.
+
     Args:
         retention_days: Retention period in days (minimum 1, default from CLEANUP_RETENTION_DAYS env)
 

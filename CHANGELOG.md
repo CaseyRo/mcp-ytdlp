@@ -1,5 +1,13 @@
 # Changelog
-All notable changes to this project will be documented in this file.
+
+## [0.2.0] - 2026-04-09
+
+### Changed
+- Bumped FastMCP dependency to >=3.2.2
+- Added explicit user-confirmation guidance to cleanup_files docstring
+
+### Added
+- Automated version bump and release CI via GitHub Actions
 
 ## [0.1.0] - 2026-01-01
 ### Added
