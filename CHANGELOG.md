@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.3] - 2026-04-18
+
+- feat(reliability): stateless_http + /health + fail-fast + FastMCP 3.2.4
+
+
 ## [0.2.2] - 2026-04-09
 
 - fix: lowercase Docker image tags in release CI
