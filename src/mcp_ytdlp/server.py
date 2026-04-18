@@ -28,6 +28,12 @@ Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 from .auth import BearerTokenVerifier
 
 _api_key = os.getenv("MCP_API_KEY", "")
+_transport = os.getenv("MCP_TRANSPORT", "streamable-http")
+if _transport in ("http", "streamable-http") and not _api_key:
+    raise SystemExit(
+        "MCP_API_KEY is required in HTTP mode. Refusing to start "
+        "an unauthenticated server."
+    )
 _auth = BearerTokenVerifier(api_key=_api_key) if _api_key else None
 
 # Initialize FastMCP server
@@ -548,8 +554,40 @@ def cleanup_files(
         }
 
 
+from datetime import datetime, timezone as _tz  # noqa: E402
+from starlette.requests import Request as _SReq  # noqa: E402
+from starlette.responses import JSONResponse as _SResp  # noqa: E402
+
+_start_time = datetime.now(_tz.utc)
+try:
+    from mcp_ytdlp import __version__ as _version
+except ImportError:
+    _version = "0.1.0"
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def _health(request: _SReq) -> _SResp:
+    return _SResp({
+        "status": "healthy",
+        "service": "mcp-ytdlp",
+        "version": _version,
+        "upstream_reachable": True,
+        "uptime_seconds": int((datetime.now(_tz.utc) - _start_time).total_seconds()),
+    })
+
+
+@mcp.custom_route("/healthz", methods=["GET"])
+async def _healthz(request: _SReq) -> _SResp:
+    return await _health(request)
+
+
 def main():
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
+    mcp.run(
+        transport="streamable-http",
+        host="0.0.0.0",
+        port=8000,
+        stateless_http=True,
+    )
 
 
 if __name__ == "__main__":
