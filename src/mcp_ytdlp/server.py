@@ -27,6 +27,41 @@ Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
 from .auth import BearerTokenVerifier
 
+
+def _validate_url(url: str) -> None:
+    """Reject non-http(s) URLs and loopback/link-local hosts before handing to yt-dlp.
+
+    yt-dlp supports file://, data:, and other protocol handlers that would let
+    a caller read arbitrary files or reach internal network resources.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Disallowed URL scheme: {parsed.scheme!r}")
+    hostname = (parsed.hostname or "").lower()
+    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or hostname.startswith(
+        "169.254."
+    ):
+        raise ValueError("Disallowed URL host")
+
+
+def _validate_cookies_path(cookies_file: str) -> Path:
+    """Confine cookies_file to OUTPUT_DIR and reject path traversal.
+
+    Without this, --cookies would accept arbitrary paths like /etc/passwd.
+    """
+    safe_name = Path(cookies_file).name
+    if safe_name != cookies_file or ".." in cookies_file:
+        raise ValueError("cookies_file must be a plain filename without path separators")
+    resolved = (Path(OUTPUT_DIR) / safe_name).resolve()
+    if not str(resolved).startswith(str(Path(OUTPUT_DIR).resolve())):
+        raise ValueError("cookies_file path escapes output directory")
+    if not resolved.exists():
+        raise ValueError(f"cookies_file not found: {safe_name}")
+    return resolved
+
+
 _api_key = os.getenv("MCP_API_KEY", "")
 _transport = os.getenv("MCP_TRANSPORT", "streamable-http")
 if _transport in ("http", "streamable-http") and not _api_key:
@@ -286,12 +321,21 @@ def download_video(
         print(f"[download_video] Request received")
         print(f"[download_video] URL: {url}")
 
+        try:
+            _validate_url(url)
+        except ValueError as e:
+            return {"status": "error", "error": str(e), "url": url}
+
         # Clean up cookies_file value
         if cookies_file in ("[null]", "null", ""):
             cookies_file = None
 
         if cookies_file:
             print("[download_video] cookies_file provided")
+            try:
+                cookies_file = str(_validate_cookies_path(cookies_file))
+            except ValueError as e:
+                return {"status": "error", "error": str(e), "url": url}
 
         # Determine output directory (parameter takes precedence over env var)
         output_dir = output_directory if output_directory else OUTPUT_DIR
