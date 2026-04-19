@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.4] - 2026-04-19
+
+- fix(security): validate URL schemes and cookies_file paths
+
+
 ## [0.2.3] - 2026-04-18
 
 - feat(reliability): stateless_http + /health + fail-fast + FastMCP 3.2.4
