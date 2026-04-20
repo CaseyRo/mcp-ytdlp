@@ -388,8 +388,12 @@ def download_video(
             # Use custom format from environment variable
             output_template = f"{output_dir}/{VIDEO_FILENAME_FORMAT}"
         else:
-            # Default: use video ID (last part of URL) as filename
-            output_template = f"{output_dir}/%(id)s.%(ext)s"
+            # Default: extractor prefix + id (capped to 60 chars) + ext.
+            # The id cap matters for the generic extractor, which sets
+            # id to the entire source URL — signed CDN URLs can run to
+            # 300+ chars and trip the filesystem's filename limit
+            # (Errno 36: File name too long) on ext4 / APFS.
+            output_template = f"{output_dir}/%(extractor_key)s-%(id).60s.%(ext)s"
 
         # Build yt-dlp command for download
         # Use simpler format: best[ext=mp4] for direct MP4 download

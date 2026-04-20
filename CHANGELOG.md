@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5] - 2026-04-20
+
+- fix(filename): cap id to 60 chars in the default output template.
+  The generic extractor uses the full source URL as `id`, which for
+  signed CDN URLs (300+ chars) tripped Errno 36 "File name too long"
+  on ext4/APFS. Template is now `%(extractor_key)s-%(id).60s.%(ext)s`.
+
 ## [0.2.4] - 2026-04-19
 
 - fix(security): validate URL schemes and cookies_file paths
