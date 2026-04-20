@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.8] - 2026-04-20
+
+- feat(files): add GET /files/{name} so HTTP clients can fetch downloads
+
+
 ## [0.2.7] - 2026-04-20
 
 - fix(compose): match new default output template with the code
