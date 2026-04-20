@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.9] - 2026-04-20
+
+- feat(frame): extract_frame tool + resolve /health version from metadata
+
+
 ## [0.2.8] - 2026-04-20
 
 - feat(files): add GET /files/{name} so HTTP clients can fetch downloads
