@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.11] - 2026-04-20
+
+- revert(frame): drop extract_frame tool
+
+
 ## [0.2.9] - 2026-04-20
 
 - feat(frame): extract_frame tool + resolve /health version from metadata
