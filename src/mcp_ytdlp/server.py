@@ -570,6 +570,82 @@ def convert_video(
 
 
 @mcp.tool()
+def extract_frame(
+    video_filename: Annotated[str, "Name of the video file in the output directory (filename only, no path)"],
+    at_seconds: Annotated[float, "Timestamp (in seconds) to sample. Default 1.0 — the first second tends to avoid fade-in blacks while staying before titles/transitions."] = 1.0,
+) -> dict:
+    """[media] Extract a single still frame from a previously-downloaded video.
+
+    Uses ffmpeg with `-ss` seek + `-frames:v 1` to pull one JPEG. The output
+    is written next to the source video with the same stem + `.jpg`. Callers
+    retrieve the bytes via the `GET /files/{name}` side channel.
+
+    Args:
+        video_filename: Name of the video file (must be in OUTPUT_DIRECTORY)
+        at_seconds: Timestamp to sample, in seconds (must be >= 0)
+
+    Returns:
+        Dictionary with status, output filename, and path
+    """
+    try:
+        if at_seconds < 0:
+            return {"status": "error", "error": "at_seconds must be >= 0"}
+
+        safe_filename = Path(video_filename).name
+        if safe_filename != video_filename or ".." in video_filename:
+            return {
+                "status": "error",
+                "error": "Invalid filename: must be a plain filename without path separators",
+            }
+
+        input_path = (Path(OUTPUT_DIR) / safe_filename).resolve()
+        if not str(input_path).startswith(str(Path(OUTPUT_DIR).resolve())):
+            return {
+                "status": "error",
+                "error": "Invalid filename: path escapes output directory",
+            }
+        if not input_path.exists():
+            return {"status": "error", "error": f"Video file not found: {safe_filename}"}
+
+        output_filename = f"{input_path.stem}.jpg"
+        output_path = Path(OUTPUT_DIR) / output_filename
+
+        # -ss before -i seeks at the container level (fast, may snap to keyframe).
+        # For a DM reel thumbnail that's fine — we want a representative still,
+        # not a specific frame. `-frames:v 1 -q:v 2` gives a high-quality JPEG.
+        command = [
+            "ffmpeg",
+            "-ss", str(at_seconds),
+            "-i", str(input_path),
+            "-frames:v", "1",
+            "-q:v", "2",
+            "-y",
+            str(output_path),
+        ]
+        subprocess.run(command, check=True, capture_output=True, timeout=60)
+
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            return {
+                "status": "error",
+                "error": "ffmpeg produced no output (video shorter than at_seconds?)",
+            }
+
+        return {
+            "status": "success",
+            "filename": output_filename,
+            "path": str(output_path),
+            "at_seconds": at_seconds,
+        }
+    except subprocess.CalledProcessError as e:
+        return {
+            "status": "error",
+            "error": f"ffmpeg failed: {e.stderr.decode() if e.stderr else str(e)}",
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@mcp.tool()
 def cleanup_files(
     retention_days: Annotated[Optional[int], "Retention period in days (minimum 1). Defaults to CLEANUP_RETENTION_DAYS env var."] = None,
 ) -> dict:
@@ -609,10 +685,31 @@ from starlette.responses import FileResponse as _FResp  # noqa: E402
 from starlette.responses import JSONResponse as _SResp  # noqa: E402
 
 _start_time = datetime.now(_tz.utc)
-try:
-    from mcp_ytdlp import __version__ as _version
-except ImportError:
-    _version = "0.1.0"
+
+
+def _resolve_version() -> str:
+    # Release CI bumps pyproject.toml but NOT src/mcp_ytdlp/__init__.py,
+    # so the installed-package metadata is the authoritative source.
+    # Fall back to the source-file literal only if importlib.metadata
+    # can't find the package (dev install / editable without reinstall).
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("mcp-ytdlp")
+        except PackageNotFoundError:
+            pass
+    except Exception:
+        pass
+    try:
+        from mcp_ytdlp import __version__ as _v
+
+        return _v
+    except ImportError:
+        return "0.0.0"
+
+
+_version = _resolve_version()
 
 
 @mcp.custom_route("/health", methods=["GET"])
