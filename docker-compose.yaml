@@ -9,7 +9,9 @@ services:
     environment:
       OUTPUT_DIRECTORY: ${OUTPUT_DIRECTORY:-/data}
       CLEANUP_RETENTION_DAYS: ${CLEANUP_RETENTION_DAYS:-7}
-      VIDEO_FILENAME_FORMAT: ${VIDEO_FILENAME_FORMAT:-%(id)s.%(ext)s}
+      # Cap id to 60 chars so generic-extractor URLs (signed CDN links,
+      # 300+ chars) don't trip Errno 36 "File name too long" on ext4/APFS.
+      VIDEO_FILENAME_FORMAT: ${VIDEO_FILENAME_FORMAT:-%(extractor_key)s-%(id).60s.%(ext)s}
       MCP_API_KEY: ${MCP_API_KEY:-}
     volumes:
       - ${OUTPUT_HOST_DIR:-ytdlp_output}:/data
