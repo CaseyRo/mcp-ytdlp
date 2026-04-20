@@ -4,6 +4,7 @@ Media Processing Sidecar Service
 FastMCP server for video download, conversion, and cleanup
 """
 
+import hmac
 import os
 import subprocess
 import uuid
@@ -604,6 +605,7 @@ def cleanup_files(
 
 from datetime import datetime, timezone as _tz  # noqa: E402
 from starlette.requests import Request as _SReq  # noqa: E402
+from starlette.responses import FileResponse as _FResp  # noqa: E402
 from starlette.responses import JSONResponse as _SResp  # noqa: E402
 
 _start_time = datetime.now(_tz.utc)
@@ -627,6 +629,37 @@ async def _health(request: _SReq) -> _SResp:
 @mcp.custom_route("/healthz", methods=["GET"])
 async def _healthz(request: _SReq) -> _SResp:
     return await _health(request)
+
+
+@mcp.custom_route("/files/{name}", methods=["GET"])
+async def _get_file(request: _SReq):
+    """Serve a downloaded file by plain filename.
+
+    Authenticated with the same bearer token as the MCP protocol. Exists so
+    callers (e.g. Bork) can pull the mp4 bytes after `download_video` without
+    sharing the /data volume. The filename comes from the tool response, so
+    clients must URL-encode it (yt-dlp replaces `?` with fullwidth `？` and
+    other URL chars may appear in the `id` portion).
+    """
+    auth_header = request.headers.get("authorization", "")
+    token = ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+    if not _api_key or not hmac.compare_digest(token, _api_key):
+        return _SResp({"error": "unauthorized"}, status_code=401)
+
+    name = request.path_params.get("name", "")
+    safe_name = Path(name).name
+    if safe_name != name or ".." in name or "/" in name or "\\" in name:
+        return _SResp({"error": "invalid filename"}, status_code=400)
+
+    file_path = (Path(OUTPUT_DIR) / safe_name).resolve()
+    if not str(file_path).startswith(str(Path(OUTPUT_DIR).resolve())):
+        return _SResp({"error": "path escapes output directory"}, status_code=400)
+    if not file_path.exists() or not file_path.is_file():
+        return _SResp({"error": "file not found"}, status_code=404)
+
+    return _FResp(str(file_path), filename=safe_name)
 
 
 def main():
