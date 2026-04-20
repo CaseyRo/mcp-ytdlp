@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.7] - 2026-04-20
+
+- fix(compose): match new default output template with the code
+
+
 ## [0.2.6] - 2026-04-20
 
 - fix(filename): cap id to 60 chars to avoid Errno 36 on CDN URLs
