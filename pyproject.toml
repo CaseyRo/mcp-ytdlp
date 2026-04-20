@@ -14,7 +14,9 @@ classifiers = [
 ]
 dependencies = [
   "fastmcp>=3.2.4",
-  "yt-dlp>=2026.2.0",
+  "yt-dlp>=2026.3.17",
+  "pydantic>=2.6",
+  "pydantic-settings>=2.2",
 ]
 
 [project.urls]
@@ -25,7 +27,7 @@ dependencies = [
 mcp-ytdlp = "mcp_ytdlp.server:main"
 
 [dependency-groups]
-dev = ["ruff>=0.8.0"]
+dev = ["ruff>=0.8.0", "pytest>=8.0", "pytest-cov>=5.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -36,3 +38,7 @@ packages = ["src/mcp_ytdlp"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src", "README.md", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

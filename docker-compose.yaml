@@ -13,6 +13,9 @@ services:
       # 300+ chars) don't trip Errno 36 "File name too long" on ext4/APFS.
       VIDEO_FILENAME_FORMAT: ${VIDEO_FILENAME_FORMAT:-%(extractor_key)s-%(id).60s.%(ext)s}
       MCP_API_KEY: ${MCP_API_KEY:-}
+      TRANSPORT: http
+      HOST: 0.0.0.0
+      PORT: "8000"
     volumes:
       - ${OUTPUT_HOST_DIR:-ytdlp_output}:/data
     restart: unless-stopped

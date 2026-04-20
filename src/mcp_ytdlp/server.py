@@ -5,7 +5,6 @@ FastMCP server for video download, conversion, and cleanup
 """
 
 import hmac
-import os
 import subprocess
 import uuid
 import threading
@@ -18,15 +17,14 @@ from typing import Annotated, Literal, Optional, Any, Dict, Tuple
 
 from fastmcp import FastMCP
 
-# Configuration from environment variables
-OUTPUT_DIR = os.getenv("OUTPUT_DIRECTORY", "/data")
-CLEANUP_RETENTION_DAYS = int(os.getenv("CLEANUP_RETENTION_DAYS", "7"))
-VIDEO_FILENAME_FORMAT = os.getenv("VIDEO_FILENAME_FORMAT")
-
-# Ensure output directory exists
-Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-
 from .auth import BearerTokenVerifier
+from .config import settings
+
+OUTPUT_DIR = settings.output_directory
+CLEANUP_RETENTION_DAYS = settings.cleanup_retention_days
+VIDEO_FILENAME_FORMAT = settings.video_filename_format
+
+Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
 
 def _validate_url(url: str) -> None:
@@ -63,13 +61,7 @@ def _validate_cookies_path(cookies_file: str) -> Path:
     return resolved
 
 
-_api_key = os.getenv("MCP_API_KEY", "")
-_transport = os.getenv("MCP_TRANSPORT", "streamable-http")
-if _transport in ("http", "streamable-http") and not _api_key:
-    raise SystemExit(
-        "MCP_API_KEY is required in HTTP mode. Refusing to start "
-        "an unauthenticated server."
-    )
+_api_key = settings.mcp_api_key.get_secret_value()
 _auth = BearerTokenVerifier(api_key=_api_key) if _api_key else None
 
 # Initialize FastMCP server
@@ -760,10 +752,13 @@ async def _get_file(request: _SReq):
 
 
 def main():
+    if settings.transport == "stdio":
+        mcp.run(transport="stdio")
+        return
     mcp.run(
         transport="streamable-http",
-        host="0.0.0.0",
-        port=8000,
+        host=settings.host,
+        port=settings.port,
         stateless_http=True,
     )
 
