@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.13] - 2026-05-04
+
+- fix(download_video): identify written file by stdout/snapshot, not mtime
+
+
 ## [0.2.12] - 2026-05-04
 
 - fix(download_video): identify the just-written file via `--print after_move:filepath` + before/after directory snapshot, instead of "most recently modified file in output dir". The old logic would silently return a stale neighbor (a previous download's bytes) when yt-dlp's current download no-opped — caller saw the wrong video file for a successful-looking response. Now raises loudly if no new file is produced.
