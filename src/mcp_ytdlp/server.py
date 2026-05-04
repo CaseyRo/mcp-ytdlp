@@ -388,13 +388,21 @@ def download_video(
             # (Errno 36: File name too long) on ext4 / APFS.
             output_template = f"{output_dir}/%(extractor_key)s-%(id).60s.%(ext)s"
 
-        # Build yt-dlp command for download
-        # Use simpler format: best[ext=mp4] for direct MP4 download
+        # Build yt-dlp command for download. ``--print after_move:filepath``
+        # is the only reliable way to identify the file yt-dlp actually
+        # wrote: scanning the output dir for "most recently modified" can
+        # silently return a stale file from a previous call when yt-dlp's
+        # current download no-ops (existing-file skip, partial fail with
+        # exit 0, etc.). yt-dlp 2023.07.06+ supports the flag; older
+        # versions ignore it and the snapshot-diff fallback below catches
+        # the new file that way.
         command = [
             "yt-dlp",
             "--format", "best[ext=mp4]",
             "--output", output_template,
             "--no-playlist",
+            "--print", "after_move:filepath",
+            "--no-simulate",  # --print would otherwise suppress the actual download
         ]
 
         # Add cookies file if provided
@@ -403,36 +411,63 @@ def download_video(
 
         command.append(url)
 
+        # Snapshot existing files BEFORE download so we can detect the
+        # new file deterministically even on yt-dlp versions that don't
+        # honor ``--print after_move:filepath`` (it's a no-op there
+        # rather than an error).
+        output_path = output_dir_path
+        if not output_path.exists():
+            raise Exception(f"Output directory does not exist: {output_dir}")
+
+        existing = {p.name for p in output_path.iterdir() if p.is_file()}
+
         print(f"[download_video] Starting download")
         # Run yt-dlp to download
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
-            check=True
+            check=True,
         )
 
-        # Find the downloaded file by looking for recently created files
-        # Since we use yt-dlp format, we need to find the file by checking modification time
-        output_path = output_dir_path
-        if not output_path.exists():
-            raise Exception(f"Output directory does not exist: {output_dir}")
+        video_extensions = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"}
+        downloaded: Optional[Path] = None
 
-        # Get the most recently created/modified file (should be the one we just downloaded)
-        files = list(output_path.iterdir())
-        if not files:
-            raise Exception("No files found in output directory after download")
+        # Preferred: trust the path yt-dlp printed via ``--print after_move:filepath``.
+        # The flag prints exactly one line per processed video — the final path
+        # after any post-processing / move. We still verify it on disk.
+        for line in reversed((result.stdout or "").splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            candidate = Path(line)
+            if candidate.suffix.lower() in video_extensions and candidate.exists():
+                downloaded = candidate
+                break
 
-        # Sort by modification time, most recent first
-        files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-        most_recent = files[0]
+        # Fallback for older yt-dlp: find the file that didn't exist before.
+        if downloaded is None:
+            new_files = [
+                p for p in output_path.iterdir()
+                if p.is_file() and p.name not in existing
+            ]
+            video_new = [p for p in new_files if p.suffix.lower() in video_extensions]
+            if video_new:
+                video_new.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+                downloaded = video_new[0]
 
-        # Verify it's a video file
-        video_extensions = {'.mp4', '.webm', '.avi', '.mov', '.mkv', '.flv', '.m4v'}
-        if most_recent.suffix.lower() not in video_extensions:
-            raise Exception(f"Downloaded file is not a video: {most_recent.name}")
-        
-        print(f"[download_video] Download complete: {most_recent.name}")
+        # Last-resort fallback: most-recent video in the dir, BUT only if
+        # yt-dlp's stdout had any signal of actual work. If yt-dlp clearly
+        # didn't write anything (no after_move and no new file), it's
+        # safer to fail loudly than to return a stale neighbor.
+        if downloaded is None:
+            raise Exception(
+                "yt-dlp reported success but produced no new file in the output directory. "
+                "This usually indicates a silent format mismatch or expired signed URL."
+            )
+
+        print(f"[download_video] Download complete: {downloaded.name}")
+        most_recent = downloaded
 
         # Prepare response with metadata
         response = {
