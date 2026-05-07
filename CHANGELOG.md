@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.14] - 2026-05-07
+
+- ops(docker): add log rotation (10m/3 files) to cap unbounded json-file logs
+
+
 ## [0.2.13] - 2026-05-04
 
 - fix(download_video): identify written file by stdout/snapshot, not mtime
