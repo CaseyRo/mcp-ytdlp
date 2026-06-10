@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.16] - 2026-06-10
+
+- feat: fastmcp 3.4.2 uplift — annotations, structured output, resources, prompts, context (#16)
+
+
 ## [0.2.14] - 2026-05-07
 
 - ops(docker): add log rotation (10m/3 files) to cap unbounded json-file logs
