@@ -140,12 +140,17 @@ Downloads a video from a URL using yt-dlp.
 **Parameters**:
 - `url` (required, string): Video URL to download
 - `cookies_file` (optional, string): Path to cookies file for authentication
+- `output_directory` (optional, string): Override the output directory for this download
+- `convert_to` (optional, string): Transcode the download to `mp4`/`webm`/`avi`/`mov`/`mkv` in the same call (e.g. "download this as webm"). When set, the response `filename` points at the converted file and `converted_to` echoes the target container.
+
+This tool is annotated `openWorldHint=true` (reaches external sites) and `idempotentHint=true` (re-downloading the same URL converges on the same file). The result is returned as a typed `DownloadResult` so clients receive an output schema; the legacy top-level fields (`status`, `filename`, `path`, `metadata`) are unchanged.
 
 **Example Request**:
 ```json
 {
   "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-  "cookies_file": "/path/to/cookies.txt"
+  "cookies_file": "/path/to/cookies.txt",
+  "convert_to": "webm"
 }
 ```
 
@@ -266,6 +271,24 @@ Manually triggers cleanup of old files.
   "retention_days": 3
 }
 ```
+
+`cleanup_files` is annotated `destructiveHint=true` so clients can gate it behind a confirmation. Retention is normally handled automatically by the hourly background sweep — only call this tool when the user explicitly asks to free space.
+
+## MCP Resources
+
+Reference data is exposed as resources so a client can read it without spending a tool call:
+
+- `ytdlp://formats` — supported transcode targets and the FFmpeg codecs used per container
+- `ytdlp://retention` — retention window, swept extensions, and sweep cadence
+- `ytdlp://version` — installed yt-dlp version and whether a newer PyPI release exists (cached ~1h)
+- `ytdlp://config` — non-secret runtime config (output dir, filename template, transport, file-fetch route)
+
+## MCP Prompts
+
+Guided workflows for the signature multi-step jobs:
+
+- `download_and_convert` — download a video and optionally transcode it to a target format in one step
+- `authenticated_download` — download a private / age-restricted video using a cookies file
 
 ## MCP Client Setup
 
