@@ -15,7 +15,9 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Annotated, Literal, Optional, Any, Dict, Tuple
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
+from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
 
 from .auth import BearerTokenVerifier
 from .config import settings
@@ -64,14 +66,131 @@ def _validate_cookies_path(cookies_file: str) -> Path:
 _api_key = settings.mcp_api_key.get_secret_value()
 _auth = BearerTokenVerifier(api_key=_api_key) if _api_key else None
 
+SERVER_INSTRUCTIONS = """\
+Media Processing Sidecar — download videos with yt-dlp, transcode with FFmpeg,
+and reclaim disk space on a retention schedule.
+
+File lifecycle:
+  1. download_video(url) fetches a video into the server's output directory and
+     returns its `filename` plus curated metadata. Pass an optional `convert_to`
+     to download and transcode in a single call.
+  2. Fetch the bytes over HTTP at GET /files/{filename} using the same bearer
+     token (URL-encode the filename — yt-dlp emits unicode chars in some ids).
+  3. convert_video(filename, target_format) re-encodes a file already in the
+     output directory to mp4/webm/avi/mov/mkv.
+  4. Files auto-expire after the retention window (default 7 days); a background
+     thread sweeps hourly. cleanup_files is a manual override — only call it when
+     the user explicitly asks to free space.
+
+Choosing a tool:
+  - "download / grab / save this video"  -> download_video
+  - "download it as webm/mp4/..."         -> download_video(convert_to=...)
+  - "convert / re-encode an existing file" -> convert_video
+  - "clean up / delete old downloads"      -> cleanup_files (destructive)
+
+Reference data (no tool call needed) is exposed as resources:
+  ytdlp://formats, ytdlp://retention, ytdlp://version, ytdlp://config.
+For authenticated (private/age-restricted) videos, supply a Netscape-format
+cookies file placed in the output directory; see the `authenticated_download`
+prompt.
+"""
+
 # Initialize FastMCP server
-mcp = FastMCP("Media Processing Sidecar", auth=_auth)
+mcp = FastMCP("Media Processing Sidecar", auth=_auth, instructions=SERVER_INSTRUCTIONS)
 
 # Progress tracking storage (in-memory, keyed by task ID)
 progress_store = {}
 
 # Cache for yt-dlp version info (check once per hour)
 _version_cache = {"version": None, "latest_version": None, "update_available": None, "last_check": None}
+
+
+class _DictCompatModel(BaseModel):
+    """Pydantic base that still supports legacy ``result["key"]`` access.
+
+    The tools historically returned plain dicts and both the existing live
+    clients (Bork, MCP portal) and this repo's test suite read fields via
+    subscription (``res["status"]``, ``res["filename"]``). Returning typed
+    models gives fastmcp a real ``output_schema`` without breaking any of
+    that — the model behaves like a read-only mapping for the keys it
+    declares plus any extra fields it carries.
+    """
+
+    model_config = {"extra": "allow"}
+
+    def __getitem__(self, key: str) -> Any:
+        try:
+            return getattr(self, key)
+        except AttributeError as exc:  # pragma: no cover - mirrors dict KeyError
+            raise KeyError(key) from exc
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and key in self.model_dump(exclude_none=True)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
+class VideoMetadata(_DictCompatModel):
+    """Curated subset of yt-dlp metadata (the ~15 fields clients actually use)."""
+
+    id: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    duration: Optional[float] = None
+    thumbnail: Optional[str] = None
+    thumbnails: list[Any] = Field(default_factory=list)
+    uploader: Optional[str] = None
+    uploader_id: Optional[str] = None
+    channel: Optional[str] = None
+    channel_id: Optional[str] = None
+    upload_date: Optional[str] = None
+    view_count: Optional[int] = None
+    like_count: Optional[int] = None
+    webpage_url: Optional[str] = None
+
+
+class DownloadResult(_DictCompatModel):
+    """Structured result of a successful download_video call."""
+
+    status: Literal["success"] = "success"
+    filename: str = Field(description="Plain filename in the output directory; fetch at /files/{filename}")
+    path: str = Field(description="Absolute path of the written file on the server")
+    metadata: Optional[VideoMetadata] = Field(
+        default=None, description="Curated video metadata, when extraction succeeded"
+    )
+    converted_to: Optional[str] = Field(
+        default=None, description="Target format if the file was transcoded in the same call"
+    )
+
+
+class ConvertResult(_DictCompatModel):
+    """Structured result of a successful convert_video call."""
+
+    status: Literal["success"] = "success"
+    filename: str = Field(description="Filename of the transcoded output in the output directory")
+    path: str = Field(description="Absolute path of the transcoded file on the server")
+    target_format: Optional[str] = Field(default=None, description="Container the file was converted to")
+
+
+class CleanupResult(_DictCompatModel):
+    """Structured result of a cleanup_files call."""
+
+    status: Literal["success"] = "success"
+    files_deleted: int = Field(description="Number of expired video files removed")
+    retention_days: int = Field(description="Retention window applied for this sweep")
+
+
+class ErrorResult(_DictCompatModel):
+    """Backward-compatible error envelope ({'status': 'error', ...}).
+
+    Kept as the failure shape (rather than raising ToolError) so existing
+    clients and tests that branch on ``res['status'] == 'error'`` keep working.
+    """
+
+    status: Literal["error"] = "error"
+    error: str
+    url: Optional[str] = None
 
 
 def get_ytdlp_version() -> str:
@@ -175,6 +294,54 @@ def get_ytdlp_version_info(force_check: bool = False) -> Dict[str, Any]:
         "latest_available_version": latest_version,
         "update_available": update_available
     }
+
+
+def _emit(ctx: Optional["Context"], message: str) -> None:
+    """Best-effort ctx.info() that is safe to call from sync tool bodies.
+
+    fastmcp's ``ctx.info`` is a coroutine. The tools here stay synchronous so
+    that direct (non-MCP) callers and the test suite can invoke them without an
+    event loop. When a loop *is* running (the normal MCP server path) we schedule
+    the log; otherwise we no-op. Logging must never break a download.
+    """
+    if ctx is None:
+        return
+    try:
+        import asyncio
+
+        coro = ctx.info(message)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            loop.create_task(coro)
+        else:  # no loop: close the coroutine to avoid "never awaited" warnings
+            coro.close()
+    except Exception:
+        pass
+
+
+def _emit_progress(
+    ctx: Optional["Context"], progress: float, total: float, message: str = ""
+) -> None:
+    """Best-effort ctx.report_progress() mirroring :func:`_emit`'s loop handling."""
+    if ctx is None:
+        return
+    try:
+        import asyncio
+
+        coro = ctx.report_progress(progress=progress, total=total, message=message)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            loop.create_task(coro)
+        else:
+            coro.close()
+    except Exception:
+        pass
 
 
 def parse_ytdlp_error(stderr: str, url: str) -> str:
@@ -294,30 +461,49 @@ cleanup_thread = threading.Thread(target=run_cleanup_periodically, daemon=True)
 cleanup_thread.start()
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Download video (yt-dlp)",
+        readOnlyHint=False,      # writes a file into the output directory
+        destructiveHint=False,   # only creates new files, never deletes
+        idempotentHint=True,     # re-downloading the same URL converges on the same file
+        openWorldHint=True,      # reaches external sites over the network
+    )
+)
 def download_video(
     url: Annotated[str, "Video URL to download (YouTube, Vimeo, etc.)"],
     cookies_file: Optional[str] = None,
     output_directory: Optional[str] = None,
-) -> dict:
+    convert_to: Annotated[
+        Optional[Literal["mp4", "webm", "avi", "mov", "mkv"]],
+        "Optionally transcode the download to this container in the same call (e.g. 'download as webm')",
+    ] = None,
+    ctx: Context | None = None,
+) -> DownloadResult | ErrorResult:
     """[media] Download a video from a URL using yt-dlp.
 
     Args:
         url: Video URL to download
         cookies_file: Optional path to cookies file for authentication
         output_directory: Optional output directory path. Defaults to OUTPUT_DIRECTORY env var or /data.
+        convert_to: Optional target container (mp4/webm/avi/mov/mkv). When set, the
+            downloaded file is transcoded with FFmpeg before returning, so a single
+            "download this as webm" intent resolves in one call.
 
     Returns:
-        Dictionary with status, filename, path, and metadata (if available)
+        DownloadResult on success (status/filename/path/metadata, plus converted_to
+        when convert_to was set); ErrorResult ({'status': 'error', ...}) on failure.
     """
     try:
         print(f"[download_video] Request received")
         print(f"[download_video] URL: {url}")
+        _emit(ctx, f"download_video: validating {url}")
+        _emit_progress(ctx, 0, 100, "validating")
 
         try:
             _validate_url(url)
         except ValueError as e:
-            return {"status": "error", "error": str(e), "url": url}
+            return ErrorResult(error=str(e), url=url)
 
         # Clean up cookies_file value
         if cookies_file in ("[null]", "null", ""):
@@ -328,7 +514,7 @@ def download_video(
             try:
                 cookies_file = str(_validate_cookies_path(cookies_file))
             except ValueError as e:
-                return {"status": "error", "error": str(e), "url": url}
+                return ErrorResult(error=str(e), url=url)
 
         # Determine output directory (parameter takes precedence over env var)
         output_dir = output_directory if output_directory else OUTPUT_DIR
@@ -352,6 +538,8 @@ def download_video(
 
         metadata_command.append(url)
 
+        _emit(ctx, "extracting metadata")
+        _emit_progress(ctx, 10, 100, "extracting metadata")
         try:
             # Extract metadata
             metadata_result = subprocess.run(
@@ -367,11 +555,8 @@ def download_video(
             # Return a clear error message instead of continuing
             error_msg = parse_ytdlp_error(e.stderr, url)
             print(f"[download_video] metadata extraction failed: {error_msg}")
-            return {
-                "status": "error",
-                "error": error_msg,
-                "url": url
-            }
+            _emit(ctx, f"metadata extraction failed: {error_msg}")
+            return ErrorResult(error=error_msg, url=url)
         except json.JSONDecodeError as e:
             # If we can't parse metadata JSON, log warning but continue with download
             print(f"Warning: Failed to parse metadata JSON: {e}")
@@ -422,6 +607,8 @@ def download_video(
         existing = {p.name for p in output_path.iterdir() if p.is_file()}
 
         print(f"[download_video] Starting download")
+        _emit(ctx, f"downloading {metadata.get('title') if metadata else url}")
+        _emit_progress(ctx, 30, 100, "downloading")
         # Run yt-dlp to download
         result = subprocess.run(
             command,
@@ -467,51 +654,61 @@ def download_video(
             )
 
         print(f"[download_video] Download complete: {downloaded.name}")
+        _emit(ctx, f"download complete: {downloaded.name}")
         most_recent = downloaded
 
-        # Prepare response with metadata
-        response = {
-            "status": "success",
-            "filename": most_recent.name,
-            "path": str(most_recent)
-        }
-
-        # Include metadata if available
+        # Curated metadata (kept identical to the historical dict shape).
+        meta_model: Optional[VideoMetadata] = None
         if metadata:
-            # Extract relevant metadata fields
-            response["metadata"] = {
-                "id": metadata.get("id"),
-                "title": metadata.get("title"),
-                "description": metadata.get("description"),
-                "duration": metadata.get("duration"),
-                "thumbnail": metadata.get("thumbnail"),
-                "thumbnails": metadata.get("thumbnails", []),
-                "uploader": metadata.get("uploader"),
-                "uploader_id": metadata.get("uploader_id"),
-                "channel": metadata.get("channel"),
-                "channel_id": metadata.get("channel_id"),
-                "upload_date": metadata.get("upload_date"),
-                "view_count": metadata.get("view_count"),
-                "like_count": metadata.get("like_count"),
-                "webpage_url": metadata.get("webpage_url"),
-            }
-        
-        return response
+            meta_model = VideoMetadata(
+                id=metadata.get("id"),
+                title=metadata.get("title"),
+                description=metadata.get("description"),
+                duration=metadata.get("duration"),
+                thumbnail=metadata.get("thumbnail"),
+                thumbnails=metadata.get("thumbnails", []),
+                uploader=metadata.get("uploader"),
+                uploader_id=metadata.get("uploader_id"),
+                channel=metadata.get("channel"),
+                channel_id=metadata.get("channel_id"),
+                upload_date=metadata.get("upload_date"),
+                view_count=metadata.get("view_count"),
+                like_count=metadata.get("like_count"),
+                webpage_url=metadata.get("webpage_url"),
+            )
+
+        # Optional one-call transcode ("download this as webm").
+        if convert_to and most_recent.suffix.lower().lstrip(".") != convert_to:
+            _emit(ctx, f"converting to {convert_to}")
+            _emit_progress(ctx, 80, 100, f"converting to {convert_to}")
+            conv = _convert_file(most_recent.name, convert_to)
+            if isinstance(conv, ErrorResult):
+                return conv
+            _emit_progress(ctx, 100, 100, "done")
+            return DownloadResult(
+                filename=conv.filename,
+                path=conv.path,
+                metadata=meta_model,
+                converted_to=convert_to,
+            )
+
+        _emit_progress(ctx, 100, 100, "done")
+        return DownloadResult(
+            filename=most_recent.name,
+            path=str(most_recent),
+            metadata=meta_model,
+            converted_to=convert_to if convert_to else None,
+        )
 
     except subprocess.CalledProcessError as e:
         error_msg = parse_ytdlp_error(e.stderr, url if 'url' in locals() else "unknown URL")
         print(f"[download_video] Download failed: {error_msg}")
-        return {
-            "status": "error",
-            "error": error_msg,
-            "url": url if 'url' in locals() else None
-        }
+        _emit(ctx, f"download failed: {error_msg}")
+        return ErrorResult(error=error_msg, url=url if 'url' in locals() else None)
     except Exception as e:
         print(f"[download_video] Unexpected error: {e}")
-        return {
-            "status": "error",
-            "error": str(e)
-        }
+        _emit(ctx, f"unexpected error: {e}")
+        return ErrorResult(error=str(e))
 
 
 ALLOWED_FORMATS = ("mp4", "webm", "avi", "mov", "mkv")
@@ -524,42 +721,32 @@ CODEC_MAP = {
 }
 
 
-@mcp.tool()
-def convert_video(
-    video_filename: Annotated[str, "Name of the video file in the output directory (filename only, no path)"],
-    target_format: Literal["mp4", "webm", "avi", "mov", "mkv"],
-) -> dict:
-    """[media] Convert a video file to a different format using FFmpeg.
+def _convert_file(
+    video_filename: str,
+    target_format: str,
+    ctx: Optional["Context"] = None,
+):
+    """Transcode a file already in OUTPUT_DIR. Returns ConvertResult | ErrorResult.
 
-    Args:
-        video_filename: Name of the video file to convert (must be in the output directory)
-        target_format: Target format — mp4, webm, avi, mov, or mkv
-
-    Returns:
-        Dictionary with status, output filename, and path
+    Shared by the ``convert_video`` tool and ``download_video``'s optional
+    ``convert_to`` fusion so both paths apply identical traversal-guarding and
+    codec selection.
     """
     try:
         # Path traversal protection: strip any directory components
         safe_filename = Path(video_filename).name
         if safe_filename != video_filename or ".." in video_filename:
-            return {
-                "status": "error",
-                "error": "Invalid filename: must be a plain filename without path separators"
-            }
+            return ErrorResult(
+                error="Invalid filename: must be a plain filename without path separators"
+            )
 
         input_path = (Path(OUTPUT_DIR) / safe_filename).resolve()
         # Verify resolved path is still inside OUTPUT_DIR
         if not str(input_path).startswith(str(Path(OUTPUT_DIR).resolve())):
-            return {
-                "status": "error",
-                "error": "Invalid filename: path escapes output directory"
-            }
+            return ErrorResult(error="Invalid filename: path escapes output directory")
 
         if not input_path.exists():
-            return {
-                "status": "error",
-                "error": f"Video file not found: {safe_filename}"
-            }
+            return ErrorResult(error=f"Video file not found: {safe_filename}")
 
         # Generate output filename with format-appropriate codecs
         output_filename = f"{input_path.stem}.{target_format}"
@@ -575,31 +762,63 @@ def convert_video(
             str(output_path)
         ]
 
+        _emit(ctx, f"transcoding {safe_filename} -> {target_format}")
         # Run FFmpeg with timeout to prevent indefinite blocking
         subprocess.run(command, check=True, capture_output=True, timeout=600)
+        _emit(ctx, f"transcode complete: {output_filename}")
 
-        return {
-            "status": "success",
-            "filename": output_filename,
-            "path": str(output_path)
-        }
+        return ConvertResult(
+            filename=output_filename,
+            path=str(output_path),
+            target_format=target_format,
+        )
 
     except subprocess.CalledProcessError as e:
-        return {
-            "status": "error",
-            "error": f"Conversion failed: {e.stderr.decode() if e.stderr else str(e)}"
-        }
+        return ErrorResult(
+            error=f"Conversion failed: {e.stderr.decode() if e.stderr else str(e)}"
+        )
     except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e)
-        }
+        return ErrorResult(error=str(e))
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Convert video format (FFmpeg)",
+        readOnlyHint=False,      # writes a new transcoded file
+        destructiveHint=False,   # creates a sibling file; leaves the source intact
+        idempotentHint=True,     # re-running overwrites to the same output (-y)
+        openWorldHint=False,     # local FFmpeg only, no network
+    )
+)
+def convert_video(
+    video_filename: Annotated[str, "Name of the video file in the output directory (filename only, no path)"],
+    target_format: Literal["mp4", "webm", "avi", "mov", "mkv"],
+    ctx: Context | None = None,
+) -> ConvertResult | ErrorResult:
+    """[media] Convert a video file to a different format using FFmpeg.
+
+    Args:
+        video_filename: Name of the video file to convert (must be in the output directory)
+        target_format: Target format — mp4, webm, avi, mov, or mkv
+
+    Returns:
+        ConvertResult on success (status/filename/path); ErrorResult on failure.
+    """
+    return _convert_file(video_filename, target_format, ctx=ctx)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Clean up expired downloads",
+        readOnlyHint=False,
+        destructiveHint=True,    # permanently deletes files
+        idempotentHint=False,    # what's deleted depends on age at call time
+        openWorldHint=False,
+    )
+)
 def cleanup_files(
     retention_days: Annotated[Optional[int], "Retention period in days (minimum 1). Defaults to CLEANUP_RETENTION_DAYS env var."] = None,
-) -> dict:
+) -> CleanupResult | ErrorResult:
     """[media] Manually trigger cleanup of old video files older than the retention period.
 
     Call only if the user explicitly requests file cleanup — retention is managed automatically.
@@ -608,26 +827,167 @@ def cleanup_files(
         retention_days: Retention period in days (minimum 1, default from CLEANUP_RETENTION_DAYS env)
 
     Returns:
-        Dictionary with status and number of files deleted
+        CleanupResult on success (status/files_deleted/retention_days); ErrorResult on failure.
     """
     try:
         # Enforce minimum retention to prevent accidental deletion of all files
         if retention_days is not None and retention_days < 1:
-            return {
-                "status": "error",
-                "error": "retention_days must be at least 1 to prevent accidental deletion of all files"
-            }
+            return ErrorResult(
+                error="retention_days must be at least 1 to prevent accidental deletion of all files"
+            )
         deleted_count = cleanup_old_files(retention_days)
-        return {
-            "status": "success",
-            "files_deleted": deleted_count,
-            "retention_days": retention_days or CLEANUP_RETENTION_DAYS
-        }
+        return CleanupResult(
+            files_deleted=deleted_count,
+            retention_days=retention_days or CLEANUP_RETENTION_DAYS,
+        )
     except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e)
-        }
+        return ErrorResult(error=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Resources — reference data the model can read without spending a tool call.
+# ---------------------------------------------------------------------------
+
+
+@mcp.resource(
+    "ytdlp://formats",
+    name="Supported target formats",
+    description="Containers convert_video / download_video(convert_to=...) can produce, with codecs.",
+    mime_type="application/json",
+)
+def _resource_formats() -> str:
+    """Supported transcode targets and the FFmpeg codecs used for each."""
+    return json.dumps(
+        {
+            "target_formats": list(ALLOWED_FORMATS),
+            "codecs": {
+                fmt: {"video": codecs[1], "audio": codecs[3]}
+                for fmt, codecs in CODEC_MAP.items()
+            },
+            "download_default": "best[ext=mp4]",
+            "note": "download_video always fetches mp4; pass convert_to to transcode in one call.",
+        },
+        indent=2,
+    )
+
+
+@mcp.resource(
+    "ytdlp://retention",
+    name="Retention policy",
+    description="File lifecycle and auto-cleanup behavior for the output directory.",
+    mime_type="application/json",
+)
+def _resource_retention() -> str:
+    """Current retention window and how the auto-cleanup sweep behaves."""
+    return json.dumps(
+        {
+            "retention_days": CLEANUP_RETENTION_DAYS,
+            "swept_extensions": sorted(
+                {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"}
+            ),
+            "sweep_interval": "hourly (background thread)",
+            "manual_override": "cleanup_files(retention_days=...) — minimum 1 day",
+            "basis": "file ctime older than now - retention_days is deleted",
+        },
+        indent=2,
+    )
+
+
+@mcp.resource(
+    "ytdlp://version",
+    name="yt-dlp version info",
+    description="Installed yt-dlp version and whether a newer release is on PyPI (cached ~1h).",
+    mime_type="application/json",
+)
+def _resource_version() -> str:
+    """Installed vs latest yt-dlp version (reuses the hourly cache)."""
+    return json.dumps(get_ytdlp_version_info(), indent=2)
+
+
+@mcp.resource(
+    "ytdlp://config",
+    name="Server configuration",
+    description="Non-secret runtime configuration (output dir, filename template, transport).",
+    mime_type="application/json",
+)
+def _resource_config() -> str:
+    """Effective non-secret configuration for this server instance."""
+    return json.dumps(
+        {
+            "output_directory": OUTPUT_DIR,
+            "cleanup_retention_days": CLEANUP_RETENTION_DAYS,
+            "video_filename_format": VIDEO_FILENAME_FORMAT,
+            "transport": settings.transport,
+            "file_fetch_route": "GET /files/{filename} (bearer auth, URL-encode the name)",
+            "auth_required": bool(_api_key),
+        },
+        indent=2,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Prompts — guided multi-step workflows for this server's signature jobs.
+# ---------------------------------------------------------------------------
+
+
+@mcp.prompt(
+    name="download_and_convert",
+    description="Guided workflow: download a video and (optionally) transcode it to a target format.",
+    tags={"media", "workflow"},
+)
+def download_and_convert_prompt(
+    url: str = Field(description="The video URL to download."),
+    target_format: str = Field(
+        default="",
+        description="Optional target container (mp4/webm/avi/mov/mkv). Leave empty to keep mp4.",
+    ),
+) -> str:
+    """Worked path for the common download-then-convert job."""
+    fmt = (target_format or "").strip().lower()
+    if fmt and fmt in ALLOWED_FORMATS:
+        return (
+            f"Download the video at {url} and deliver it as {fmt}.\n\n"
+            f"Use a single call: download_video(url='{url}', convert_to='{fmt}'). "
+            "That downloads and transcodes in one step and returns the final "
+            "filename plus metadata. Then the bytes are available at "
+            "GET /files/{filename} using the server bearer token (URL-encode the "
+            "filename). Do not call cleanup_files unless the user asks to free space."
+        )
+    return (
+        f"Download the video at {url}.\n\n"
+        f"1. Call download_video(url='{url}'). Inspect the returned `filename` and "
+        "`metadata` (title, uploader, duration).\n"
+        "2. If the user later wants a different container, call "
+        "convert_video(video_filename=<filename>, target_format=<mp4|webm|avi|mov|mkv>).\n"
+        "3. Fetch bytes at GET /files/{filename} with the bearer token (URL-encode "
+        "the filename). Leave retention to the automatic sweep."
+    )
+
+
+@mcp.prompt(
+    name="authenticated_download",
+    description="Guided workflow for downloading private / age-restricted videos using a cookies file.",
+    tags={"media", "auth"},
+)
+def authenticated_download_prompt(
+    url: str = Field(description="The private or age-restricted video URL."),
+    cookies_file: str = Field(
+        default="cookies.txt",
+        description="Plain filename of a Netscape-format cookies file placed in the output directory.",
+    ),
+) -> str:
+    """Worked path for auth-gated downloads via a cookies file."""
+    return (
+        f"The video at {url} likely requires sign-in (private, age-restricted, or "
+        "members-only).\n\n"
+        f"1. Ensure a Netscape-format cookies export named '{cookies_file}' exists in "
+        "the server's output directory (it must be a plain filename — no path "
+        "separators or .. — for the traversal guard to accept it).\n"
+        f"2. Call download_video(url='{url}', cookies_file='{cookies_file}').\n"
+        "3. If it still fails, read the ErrorResult.error message — it classifies the "
+        "cause (private / age-restricted / geoblocked / auth-required) with the next "
+        "step. Refresh the cookies export if authentication is rejected."
+    )
 
 
 from datetime import datetime, timezone as _tz  # noqa: E402
