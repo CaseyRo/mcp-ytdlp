@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.19] - 2026-06-30
+
+- chore(deps): security upgrades (pip-audit)
+
+
 ## [0.2.18] - 2026-06-30
 
 - chore: add MIT LICENSE, migrate openspec to config.yaml, repo hygiene
