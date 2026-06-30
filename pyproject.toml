@@ -14,7 +14,7 @@ classifiers = [
 ]
 dependencies = [
   "fastmcp>=3.4.2,<4.0.0",
-  "yt-dlp>=2026.3.17",
+  "yt-dlp>=2026.6.9",
   "pydantic>=2.6",
   "pydantic-settings>=2.2",
   # Security floors (transitive deps of fastmcp; pinned to address CVEs)
