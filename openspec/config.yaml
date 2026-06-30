@@ -1,0 +1,46 @@
+schema: spec-driven
+
+references:
+  - mcp-fleet
+
+context: |
+  # mcp-ytdlp
+
+  ## Purpose
+  FastMCP server that downloads videos with yt-dlp, transcodes them with FFmpeg,
+  and reclaims disk space on a retention schedule. Runs as a standalone Docker
+  container ("media processing sidecar") and exposes its capabilities over MCP.
+
+  ## Tech Stack
+  - Python >= 3.10
+  - FastMCP >= 3.4.2, < 4.0.0 (tools, resources, prompts, structured output)
+  - yt-dlp (download) + FFmpeg (transcode)
+  - pydantic / pydantic-settings for env-driven config
+  - hatchling build backend; src/ layout (src/mcp_ytdlp/)
+
+  ## Conventions
+  - Code style: ruff; tools are synchronous so direct callers and tests can run
+    them without an event loop. Context logging/progress is best-effort.
+  - Transport: streamable-http on port 8000 (stateless), bearer-token auth via
+    MCP_API_KEY; stdio transport supported for local use. HTTP transport refuses
+    to start without MCP_API_KEY.
+  - Security: URL scheme/host allow-listing, cookies-file and output-file path
+    traversal guards, non-root container user, CVE-floor dependency pins.
+  - Tests: pytest under tests/ (config, validators, download-filename). Run with
+    `uv run --frozen pytest`.
+
+  ## MCP Surface
+  - Tools: download_video, convert_video, cleanup_files
+  - Resources: ytdlp://formats, ytdlp://retention, ytdlp://version, ytdlp://config
+  - Prompts: download_and_convert, authenticated_download
+  - Custom routes: GET /health, /healthz, /files/{name} (bearer-authenticated)
+
+  ## Deploy
+  - Release CI bumps the version on push to main and tags `v*`.
+  - Tags publish to PyPI (Trusted Publisher) and push multi-arch images to GHCR.
+  - Deployed instances redeploy via Komodo on push.
+
+  ## Constraints
+  - Downloaded files auto-expire after CLEANUP_RETENTION_DAYS (default 7); an
+    hourly background thread sweeps the output directory. cleanup_files is a
+    destructive manual override.

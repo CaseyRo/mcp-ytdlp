@@ -17,3 +17,6 @@ build/
 
 # OS
 .DS_Store
+._*
+.pytest_cache/
+.ruff_cache/

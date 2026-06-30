@@ -454,5 +454,5 @@ This service runs as a standalone Docker container providing MCP tools for media
 
 ## License
 
-[Add your license information here]
+Released under the [MIT License](LICENSE). Copyright (c) 2026 Casey Romkes.
 
