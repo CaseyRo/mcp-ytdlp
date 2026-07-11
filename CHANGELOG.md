@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.22] - 2026-07-11
+
+- Bump fastmcp 3.4.3->3.4.4, install from frozen lockfile in Docker; drop redundant explicit yt-dlp install
+
+
 ## [0.2.21] - 2026-07-08
 
 - openspec: reference consolidated cdit store

@@ -1,6 +1,6 @@
 [project]
 name = "mcp-ytdlp"
-version = "0.2.21"
+version = "0.2.22"
 description = "FastMCP server for downloading and converting videos via yt-dlp"
 readme = "README.md"
 license = {text = "MIT"}
