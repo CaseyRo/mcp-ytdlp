@@ -8,9 +8,13 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy project files and install (includes yt-dlp Python library)
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir . yt-dlp
+RUN pip install --no-cache-dir uv && \
+    uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt && \
+    pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt && \
+    pip install --no-cache-dir --no-deps . && \
+    rm /tmp/requirements.txt
 
 # Create output data directory and non-root user
 RUN mkdir -p /data && \
