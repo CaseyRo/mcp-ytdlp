@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 # Install system dependencies: ffmpeg for media processing
 RUN apt-get update && \
