@@ -33,7 +33,7 @@ The service runs as a standalone Docker container, providing MCP tools for media
 1. **Copy service files** to your project directory:
    - `main.py`
    - `Dockerfile`
-   - `requirements.txt`
+   - `pyproject.toml` and `uv.lock`
    - `docker-compose.yaml` (or update your existing one)
 
 2. **Update docker-compose.yaml** with your volume paths:
