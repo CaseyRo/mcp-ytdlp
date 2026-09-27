@@ -77,3 +77,11 @@ async def test_download_round_trips_without_network(tmp_output_dir, monkeypatch)
     payload = result.structured_content["result"]
     assert payload["status"] == "success"
     assert payload["filename"] == "Generic-abc123.mp4"
+
+
+async def test_call_tool_writes_one_usage_line(capsys):
+    async with Client(mcp) as client:
+        await client.call_tool("cleanup_files", {"retention_days": 100000})
+    lines = [line for line in capsys.readouterr().err.splitlines() if '"mcp_usage"' in line]
+    assert len(lines) == 1
+    assert all(s in lines[0] for s in ('"ytdlp"', '"cleanup_files"', '"outcome": "ok"'))

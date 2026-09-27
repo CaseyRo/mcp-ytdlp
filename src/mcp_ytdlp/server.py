@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from .auth import BearerTokenVerifier
 from .config import settings
+from .usage import UsageMiddleware
 
 OUTPUT_DIR = settings.output_directory
 CLEANUP_RETENTION_DAYS = settings.cleanup_retention_days
@@ -97,6 +98,7 @@ prompt.
 
 # Initialize FastMCP server
 mcp = FastMCP("Media Processing Sidecar", auth=_auth, instructions=SERVER_INSTRUCTIONS)
+mcp.add_middleware(UsageMiddleware("ytdlp"))
 
 # Progress tracking storage (in-memory, keyed by task ID)
 progress_store = {}
