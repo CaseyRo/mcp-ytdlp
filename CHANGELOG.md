@@ -1,5 +1,7 @@
 # Changelog
 
+From v0.2.25 on, versions are git tags only; this file and pyproject's version are no longer bumped by CI.
+
 ## [0.2.24] - 2026-09-27
 
 - chore: phase 0 safety net — CI test job, pytest gate in release, MCP protocol tests (#34)

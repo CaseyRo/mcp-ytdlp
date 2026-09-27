@@ -11,5 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v4
+      # pyproject's version is static; the wheel takes its version from the tag.
+      - run: sed -i "s/^version = .*/version = \"${GITHUB_REF_NAME#v}\"/" pyproject.toml
       - run: uv build
       - uses: pypa/gh-action-pypi-publish@release/v1
