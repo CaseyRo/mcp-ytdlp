@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.24] - 2026-09-27
+
+- chore: phase 0 safety net — CI test job, pytest gate in release, MCP protocol tests (#34)
+
+
 ## [0.2.23] - 2026-08-26
 
 - chore: drop stale requirements.txt
