@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import threading
 
 # Settings are read at import time (see test_download_filename.py).
 os.environ.setdefault("TRANSPORT", "stdio")
@@ -26,7 +27,7 @@ from mcp_ytdlp.server import mcp  # noqa: E402
 
 pytestmark = pytest.mark.anyio
 
-EXPECTED_TOOLS = {"download_video", "convert_video", "cleanup_files"}
+EXPECTED_TOOLS = {"download_video", "get_download_result", "convert_video", "cleanup_files"}
 
 
 @pytest.fixture
@@ -37,21 +38,17 @@ def anyio_backend():
 async def test_server_registers_its_tools():
     async with Client(mcp) as client:
         names = {t.name for t in await client.list_tools()}
-    assert EXPECTED_TOOLS <= names, f"missing: {EXPECTED_TOOLS - names}"
+    assert names == EXPECTED_TOOLS
 
 
 async def test_annotations_survive_the_wire():
-    # No tool here is read-only, so assert the hints that matter for the
-    # destructive one and the network-reaching one, read back through the client.
     async with Client(mcp) as client:
         tools = {t.name: t for t in await client.list_tools()}
     cleanup = tools["cleanup_files"].annotations
-    assert cleanup is not None
-    assert cleanup.readOnlyHint is False
-    assert cleanup.destructiveHint is True
-    download = tools["download_video"].annotations
-    assert download is not None
-    assert download.openWorldHint is True
+    assert cleanup.read_only_hint is False
+    assert cleanup.destructive_hint is True
+    assert tools["download_video"].annotations.open_world_hint is True
+    assert tools["get_download_result"].annotations.read_only_hint is True
 
 
 async def test_download_round_trips_without_network(tmp_output_dir, monkeypatch):
@@ -77,6 +74,99 @@ async def test_download_round_trips_without_network(tmp_output_dir, monkeypatch)
     payload = result.structured_content["result"]
     assert payload["status"] == "success"
     assert payload["filename"] == "Generic-abc123.mp4"
+
+
+def _fake_download(tmp_output_dir, release: threading.Event | None = None):
+    """subprocess.run stand-in: metadata instantly, download optionally blocked on `release`."""
+    target = Path(tmp_output_dir) / "Generic-slow.mp4"
+
+    def fake_run(cmd, *args, **kwargs):
+        assert cmd[0] == "yt-dlp", f"unexpected subprocess: {cmd}"
+        if "--dump-json" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"id": "slow"}', stderr="")
+        if release is not None:
+            assert release.wait(10)
+        target.write_bytes(b"\x00")
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"{target}\n", stderr="")
+
+    return fake_run
+
+
+async def test_slow_download_returns_pending_then_poll_returns_result(tmp_output_dir, monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(subprocess, "run", _fake_download(tmp_output_dir, release))
+    monkeypatch.setattr(server, "OUTPUT_DIR", tmp_output_dir)
+    monkeypatch.setattr(server, "INLINE_WAIT_SECONDS", 0.2)
+
+    async with Client(mcp) as client:
+        first = (await client.call_tool("download_video", {"url": "https://example.com/v"})).structured_content["result"]
+        assert first["status"] == "pending"
+        assert first["poll_with"]["tool"] == "get_download_result"
+
+        still = await client.call_tool("get_download_result", {"job_id": first["job_id"], "wait_seconds": 0})
+        assert still.structured_content["result"]["status"] == "pending"
+
+        release.set()
+        monkeypatch.setattr(server, "INLINE_WAIT_SECONDS", 5)
+        done = await client.call_tool("get_download_result", {"job_id": first["job_id"], "wait_seconds": 5})
+    payload = done.structured_content["result"]
+    assert payload["status"] == "success"
+    assert payload["filename"] == "Generic-slow.mp4"
+
+
+async def test_unknown_job_id_is_an_error():
+    async with Client(mcp) as client:
+        result = await client.call_tool("get_download_result", {"job_id": "nope", "wait_seconds": 0})
+    assert result.structured_content["result"]["status"] == "error"
+
+
+async def test_subprocess_timeout_is_an_error(tmp_output_dir, monkeypatch):
+    seen = []
+
+    def fake_run(cmd, *args, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(server, "OUTPUT_DIR", tmp_output_dir)
+    monkeypatch.setattr(server.settings, "download_timeout_seconds", 7)
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("download_video", {"url": "https://example.com/v"})
+    payload = result.structured_content["result"]
+    assert payload["status"] == "error"
+    assert "timed out after 7s" in payload["error"]
+    assert seen == [7]
+
+
+@pytest.mark.parametrize("escape", ["..", "../elsewhere", "/etc", "sub/../../x"])
+async def test_output_directory_escape_is_rejected(tmp_output_dir, monkeypatch, escape):
+    def fail(*a, **k):
+        raise AssertionError("yt-dlp must not run for a rejected output_directory")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    monkeypatch.setattr(server, "OUTPUT_DIR", tmp_output_dir)
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "download_video", {"url": "https://example.com/v", "output_directory": escape}
+        )
+    payload = result.structured_content["result"]
+    assert payload["status"] == "error"
+    assert "escapes" in payload["error"]
+
+
+async def test_output_subdirectory_is_allowed(tmp_output_dir, monkeypatch):
+    sub = Path(tmp_output_dir) / "clips"
+    monkeypatch.setattr(server, "OUTPUT_DIR", tmp_output_dir)
+    fake = _fake_download(str(sub))
+    monkeypatch.setattr(subprocess, "run", fake)
+
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "download_video", {"url": "https://example.com/v", "output_directory": "clips"}
+        )
+    assert result.structured_content["result"]["status"] == "success"
 
 
 async def test_call_tool_writes_one_usage_line(capsys):

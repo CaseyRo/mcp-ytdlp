@@ -2,6 +2,13 @@
 
 From v0.2.25 on, versions are git tags only; this file and pyproject's version are no longer bumped by CI.
 
+## Unreleased
+
+- fastmcp 4.0.10 (pilot for the fleet migration): snake_case annotations, `allowed_hosts` and `ctx.info` progress helpers removed, `ca-certificates` in the image.
+- `download_video` runs detached and returns a pending job after 20 s; new read-only `get_download_result` long-polls it.
+- yt-dlp subprocess timeout (`DOWNLOAD_TIMEOUT_SECONDS`, default 1800); `output_directory` confined to the output directory.
+- Usage log line carries the negotiated MCP protocol version.
+
 ## [0.2.24] - 2026-09-27
 
 - chore: phase 0 safety net — CI test job, pytest gate in release, MCP protocol tests (#34)

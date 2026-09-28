@@ -68,7 +68,7 @@ def test_filename_from_after_move_print(tmp_output_dir, clean_env, monkeypatch, 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(server, "OUTPUT_DIR", tmp_output_dir)
 
-    res = server.download_video(url="https://cdn.example/AQNFreshId.mp4?token=x")
+    res = server._run_download(url="https://cdn.example/AQNFreshId.mp4?token=x")
     assert res["status"] == "success"
     assert res["filename"] == "Generic-AQNFreshId.mp4"
     # And the download command must have included the after_move flag
@@ -98,7 +98,7 @@ def test_filename_from_snapshot_diff(tmp_output_dir, clean_env, monkeypatch, fak
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(server, "OUTPUT_DIR", tmp_output_dir)
 
-    res = server.download_video(url="https://cdn.example/AQNFreshId.mp4?token=x")
+    res = server._run_download(url="https://cdn.example/AQNFreshId.mp4?token=x")
     assert res["status"] == "success"
     assert res["filename"] == "Generic-AQNFreshId.mp4"
     # Snapshot diff explicitly excluded the stale neighbor:
@@ -123,7 +123,7 @@ def test_no_new_file_raises_loudly(tmp_output_dir, clean_env, monkeypatch, fake_
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(server, "OUTPUT_DIR", tmp_output_dir)
 
-    res = server.download_video(url="https://cdn.example/AQNFreshId.mp4?token=x")
+    res = server._run_download(url="https://cdn.example/AQNFreshId.mp4?token=x")
     # The function returns an error response (CalledProcessError handler),
     # NOT a success response pointing at the stale file.
     assert res["status"] == "error"
@@ -162,8 +162,8 @@ def test_two_consecutive_calls_return_their_own_files(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    res1 = server.download_video(url="https://cdn.example/first.mp4?token=x")
-    res2 = server.download_video(url="https://cdn.example/second.mp4?token=y")
+    res1 = server._run_download(url="https://cdn.example/first.mp4?token=x")
+    res2 = server._run_download(url="https://cdn.example/second.mp4?token=y")
 
     assert res1["status"] == "success"
     assert res2["status"] == "success"
