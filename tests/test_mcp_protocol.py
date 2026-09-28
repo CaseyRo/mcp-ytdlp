@@ -21,6 +21,7 @@ from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
 from fastmcp import Client  # noqa: E402
+from fastmcp.exceptions import ToolError  # noqa: E402
 
 from mcp_ytdlp import server  # noqa: E402
 from mcp_ytdlp.server import mcp  # noqa: E402
@@ -116,8 +117,30 @@ async def test_slow_download_returns_pending_then_poll_returns_result(tmp_output
 
 async def test_unknown_job_id_is_an_error():
     async with Client(mcp) as client:
-        result = await client.call_tool("get_download_result", {"job_id": "nope", "wait_seconds": 0})
-    assert result.structured_content["result"]["status"] == "error"
+        with pytest.raises(ToolError, match="Unknown job_id"):
+            await client.call_tool("get_download_result", {"job_id": "nope", "wait_seconds": 0})
+
+
+async def test_failed_pending_download_raises_on_poll(tmp_output_dir, monkeypatch):
+    release = threading.Event()
+
+    def fake_run(cmd, *args, **kwargs):
+        if "--dump-json" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"id": "x"}', stderr="")
+        assert release.wait(10)
+        raise subprocess.CalledProcessError(1, cmd, stderr="ERROR: Private video")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(server, "OUTPUT_DIR", tmp_output_dir)
+    monkeypatch.setattr(server, "INLINE_WAIT_SECONDS", 0.2)
+
+    async with Client(mcp) as client:
+        first = (await client.call_tool("download_video", {"url": "https://example.com/v"})).structured_content["result"]
+        assert first["status"] == "pending"
+        release.set()
+        monkeypatch.setattr(server, "INLINE_WAIT_SECONDS", 5)
+        with pytest.raises(ToolError, match="private"):
+            await client.call_tool("get_download_result", {"job_id": first["job_id"], "wait_seconds": 5})
 
 
 async def test_subprocess_timeout_is_an_error(tmp_output_dir, monkeypatch):
@@ -132,10 +155,8 @@ async def test_subprocess_timeout_is_an_error(tmp_output_dir, monkeypatch):
     monkeypatch.setattr(server.settings, "download_timeout_seconds", 7)
 
     async with Client(mcp) as client:
-        result = await client.call_tool("download_video", {"url": "https://example.com/v"})
-    payload = result.structured_content["result"]
-    assert payload["status"] == "error"
-    assert "timed out after 7s" in payload["error"]
+        with pytest.raises(ToolError, match="timed out after 7s"):
+            await client.call_tool("download_video", {"url": "https://example.com/v"})
     assert seen == [7]
 
 
@@ -148,12 +169,8 @@ async def test_output_directory_escape_is_rejected(tmp_output_dir, monkeypatch, 
     monkeypatch.setattr(server, "OUTPUT_DIR", tmp_output_dir)
 
     async with Client(mcp) as client:
-        result = await client.call_tool(
-            "download_video", {"url": "https://example.com/v", "output_directory": escape}
-        )
-    payload = result.structured_content["result"]
-    assert payload["status"] == "error"
-    assert "escapes" in payload["error"]
+        with pytest.raises(ToolError, match="escapes"):
+            await client.call_tool("download_video", {"url": "https://example.com/v", "output_directory": escape})
 
 
 async def test_output_subdirectory_is_allowed(tmp_output_dir, monkeypatch):
@@ -175,3 +192,25 @@ async def test_call_tool_writes_one_usage_line(capsys):
     lines = [line for line in capsys.readouterr().err.splitlines() if '"mcp_usage"' in line]
     assert len(lines) == 1
     assert all(s in lines[0] for s in ('"ytdlp"', '"cleanup_files"', '"outcome": "ok"'))
+
+
+async def test_convert_missing_file_raises(tmp_output_dir, monkeypatch):
+    monkeypatch.setattr(server, "OUTPUT_DIR", tmp_output_dir)
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError, match="not found"):
+            await client.call_tool("convert_video", {"video_filename": "nope.mp4", "target_format": "webm"})
+
+
+async def test_cleanup_rejects_zero_retention():
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError, match="at least 1"):
+            await client.call_tool("cleanup_files", {"retention_days": 0})
+
+
+async def test_failed_call_logs_outcome_error(capsys):
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool("cleanup_files", {"retention_days": 0})
+    lines = [line for line in capsys.readouterr().err.splitlines() if '"mcp_usage"' in line]
+    assert len(lines) == 1
+    assert '"outcome": "error"' in lines[0]

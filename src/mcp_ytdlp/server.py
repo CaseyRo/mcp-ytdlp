@@ -15,9 +15,10 @@ import re
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Annotated, Literal, Optional, Any, Dict, Tuple
+from typing import Annotated, Literal, Optional, Any, Dict
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
@@ -185,10 +186,10 @@ class CleanupResult(_DictCompatModel):
 
 
 class ErrorResult(_DictCompatModel):
-    """Backward-compatible error envelope ({'status': 'error', ...}).
+    """Internal failure value of the download/convert helpers.
 
-    Kept as the failure shape (rather than raising ToolError) so existing
-    clients and tests that branch on ``res['status'] == 'error'`` keep working.
+    Tools never return it: ``_raise_on_error`` turns it into a ``ToolError`` at
+    the tool boundary, so failures reach clients (and usage telemetry) as errors.
     """
 
     status: Literal["error"] = "error"
@@ -437,14 +438,22 @@ class DownloadJob(_DictCompatModel):
     )
 
 
-async def _wait_for_job(job_id: str, wait_seconds: float) -> "DownloadResult | DownloadJob | ErrorResult":
+def _raise_on_error(result):
+    if isinstance(result, ErrorResult):
+        raise ToolError(result.error)
+    return result
+
+
+async def _wait_for_job(job_id: str, wait_seconds: float) -> "DownloadResult | DownloadJob":
     fut = _jobs[job_id]
     # asyncio.wait never cancels what it waits on, so the download outlives this request.
     await asyncio.wait({asyncio.wrap_future(fut)}, timeout=max(0, min(wait_seconds, INLINE_WAIT_SECONDS)))
     if not fut.done():
         return DownloadJob(job_id=job_id)
     exc = fut.exception()
-    return ErrorResult(error=str(exc)) if exc else fut.result()
+    if exc:
+        raise ToolError(str(exc))
+    return _raise_on_error(fut.result())
 
 
 @mcp.tool(
@@ -466,12 +475,12 @@ async def download_video(
         Optional[Literal["mp4", "webm", "avi", "mov", "mkv"]],
         "Optionally transcode the download to this container in the same call (e.g. 'download as webm')",
     ] = None,
-) -> DownloadResult | DownloadJob | ErrorResult:
+) -> DownloadResult | DownloadJob:
     """[media] Download a video from a URL using yt-dlp.
 
     Waits up to 20 s. If the download is still running it returns
     {job_id, status: "pending", poll_with}; call get_download_result(job_id)
-    until the status is "success" or "error".
+    until the status is "success". Failures raise a tool error.
 
     Args:
         url: Video URL to download
@@ -483,8 +492,8 @@ async def download_video(
 
     Returns:
         DownloadResult on success (status/filename/path/metadata, plus converted_to
-        when convert_to was set); DownloadJob while still running; ErrorResult
-        ({'status': 'error', ...}) on failure.
+        when convert_to was set); DownloadJob while still running. Failures
+        raise a tool error.
     """
     job_id = uuid.uuid4().hex
     _jobs[job_id] = _executor.submit(_run_download, url, cookies_file, output_directory, convert_to)
@@ -502,14 +511,14 @@ async def download_video(
 async def get_download_result(
     job_id: Annotated[str, "job_id from a pending download_video response"],
     wait_seconds: Annotated[int, "Long-poll up to this many seconds (max 20)"] = INLINE_WAIT_SECONDS,
-) -> DownloadResult | DownloadJob | ErrorResult:
+) -> DownloadResult | DownloadJob:
     """[media] Poll a download that download_video returned as pending.
 
-    Returns the DownloadResult or ErrorResult once finished, otherwise the same
-    pending handle; poll again. Jobs live in memory and are lost on a server restart.
+    Returns the DownloadResult once finished, otherwise the same pending handle;
+    poll again. A failed download raises a tool error. Jobs live in memory and are lost on a server restart.
     """
     if job_id not in _jobs:
-        return ErrorResult(error=f"Unknown job_id {job_id!r} (never dispatched, or the server restarted)")
+        raise ToolError(f"Unknown job_id {job_id!r} (never dispatched, or the server restarted)")
     return await _wait_for_job(job_id, wait_seconds)
 
 
@@ -521,7 +530,7 @@ def _run_download(
 ) -> DownloadResult | ErrorResult:
     """Blocking download; runs on the worker thread."""
     try:
-        print(f"[download_video] Request received")
+        print("[download_video] Request received")
         print(f"[download_video] URL: {url}")
 
         try:
@@ -631,7 +640,7 @@ def _run_download(
 
         existing = {p.name for p in output_path.iterdir() if p.is_file()}
 
-        print(f"[download_video] Starting download")
+        print("[download_video] Starting download")
         # Run yt-dlp to download
         result = subprocess.run(
             command,
@@ -811,7 +820,7 @@ def _convert_file(
 def convert_video(
     video_filename: Annotated[str, "Name of the video file in the output directory (filename only, no path)"],
     target_format: Literal["mp4", "webm", "avi", "mov", "mkv"],
-) -> ConvertResult | ErrorResult:
+) -> ConvertResult:
     """[media] Convert a video file to a different format using FFmpeg.
 
     Args:
@@ -819,9 +828,9 @@ def convert_video(
         target_format: Target format — mp4, webm, avi, mov, or mkv
 
     Returns:
-        ConvertResult on success (status/filename/path); ErrorResult on failure.
+        ConvertResult (status/filename/path). Failures raise a tool error.
     """
-    return _convert_file(video_filename, target_format)
+    return _raise_on_error(_convert_file(video_filename, target_format))
 
 
 @mcp.tool(
@@ -835,7 +844,7 @@ def convert_video(
 )
 def cleanup_files(
     retention_days: Annotated[Optional[int], "Retention period in days (minimum 1). Defaults to CLEANUP_RETENTION_DAYS env var."] = None,
-) -> CleanupResult | ErrorResult:
+) -> CleanupResult:
     """[media] Manually trigger cleanup of old video files older than the retention period.
 
     Call only if the user explicitly requests file cleanup — retention is managed automatically.
@@ -844,21 +853,19 @@ def cleanup_files(
         retention_days: Retention period in days (minimum 1, default from CLEANUP_RETENTION_DAYS env)
 
     Returns:
-        CleanupResult on success (status/files_deleted/retention_days); ErrorResult on failure.
+        CleanupResult (status/files_deleted/retention_days). Failures raise a tool error.
     """
+    # Enforce minimum retention to prevent accidental deletion of all files
+    if retention_days is not None and retention_days < 1:
+        raise ToolError("retention_days must be at least 1 to prevent accidental deletion of all files")
     try:
-        # Enforce minimum retention to prevent accidental deletion of all files
-        if retention_days is not None and retention_days < 1:
-            return ErrorResult(
-                error="retention_days must be at least 1 to prevent accidental deletion of all files"
-            )
         deleted_count = cleanup_old_files(retention_days)
-        return CleanupResult(
-            files_deleted=deleted_count,
-            retention_days=retention_days or CLEANUP_RETENTION_DAYS,
-        )
     except Exception as e:
-        return ErrorResult(error=str(e))
+        raise ToolError(str(e)) from e
+    return CleanupResult(
+        files_deleted=deleted_count,
+        retention_days=retention_days or CLEANUP_RETENTION_DAYS,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1001,13 +1008,13 @@ def authenticated_download_prompt(
         "the server's output directory (it must be a plain filename — no path "
         "separators or .. — for the traversal guard to accept it).\n"
         f"2. Call download_video(url='{url}', cookies_file='{cookies_file}').\n"
-        "3. If it still fails, read the ErrorResult.error message — it classifies the "
+        "3. If it still fails, read the tool error message — it classifies the "
         "cause (private / age-restricted / geoblocked / auth-required) with the next "
         "step. Refresh the cookies export if authentication is rejected."
     )
 
 
-from datetime import datetime, timezone as _tz  # noqa: E402
+from datetime import timezone as _tz  # noqa: E402
 from starlette.requests import Request as _SReq  # noqa: E402
 from starlette.responses import FileResponse as _FResp  # noqa: E402
 from starlette.responses import JSONResponse as _SResp  # noqa: E402
