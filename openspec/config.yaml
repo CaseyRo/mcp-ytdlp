@@ -30,15 +30,16 @@ context: |
     `uv run --frozen pytest`.
 
   ## MCP Surface
-  - Tools: download_video, convert_video, cleanup_files
+  - Tools: download_video, get_download_result, convert_video, cleanup_files
   - Resources: ytdlp://formats, ytdlp://retention, ytdlp://version, ytdlp://config
   - Prompts: download_and_convert, authenticated_download
   - Custom routes: GET /health, /healthz, /files/{name} (bearer-authenticated)
 
   ## Deploy
-  - Release CI bumps the version on push to main and tags `v*`.
-  - Tags publish to PyPI (Trusted Publisher) and push multi-arch images to GHCR.
-  - Deployed instances redeploy via Komodo on push.
+  - Releases are tag-only: release CI pushes the next `v*` tag on merge to main
+    and commits nothing back.
+  - Tags publish to PyPI (Trusted Publisher).
+  - Deployments build the Docker image from source (`build: .`).
 
   ## Constraints
   - Downloaded files auto-expire after CLEANUP_RETENTION_DAYS (default 7); an
