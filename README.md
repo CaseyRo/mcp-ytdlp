@@ -133,15 +133,21 @@ networks:
 
 ## MCP Tools Reference
 
+### `get_download_result`
+
+Long-polls a download that `download_video` returned as pending. Parameters: `job_id` (required), `wait_seconds` (optional, max 20). Returns the same shapes as `download_video`. Read-only. Jobs live in memory and are lost on restart.
+
 ### `download_video`
 
 Downloads a video from a URL using yt-dlp.
 
 **Parameters**:
 - `url` (required, string): Video URL to download
-- `cookies_file` (optional, string): Path to cookies file for authentication
-- `output_directory` (optional, string): Override the output directory for this download
+- `cookies_file` (optional, string): Plain filename of a cookies file in the output directory
+- `output_directory` (optional, string): Subdirectory of the output directory; paths that resolve outside it are rejected
 - `convert_to` (optional, string): Transcode the download to `mp4`/`webm`/`avi`/`mov`/`mkv` in the same call (e.g. "download this as webm"). When set, the response `filename` points at the converted file and `converted_to` echoes the target container.
+
+Waits up to 20 s. A longer download keeps running in the background and the tool returns `{"job_id": "...", "status": "pending", "poll_with": {"tool": "get_download_result", "wait_seconds": 20}}`; call `get_download_result(job_id)` until `status` is `success` or `error`. Each yt-dlp subprocess is capped at `DOWNLOAD_TIMEOUT_SECONDS` (default 1800).
 
 This tool is annotated `openWorldHint=true` (reaches external sites) and `idempotentHint=true` (re-downloading the same URL converges on the same file). The result is returned as a typed `DownloadResult` so clients receive an output schema; the legacy top-level fields (`status`, `filename`, `path`, `metadata`) are unchanged.
 
@@ -149,7 +155,7 @@ This tool is annotated `openWorldHint=true` (reaches external sites) and `idempo
 ```json
 {
   "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-  "cookies_file": "/path/to/cookies.txt",
+  "cookies_file": "cookies.txt",
   "convert_to": "webm"
 }
 ```

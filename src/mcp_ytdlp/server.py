@@ -4,6 +4,7 @@ Media Processing Sidecar Service
 FastMCP server for video download, conversion, and cleanup
 """
 
+import asyncio
 import hmac
 import subprocess
 import uuid
@@ -11,11 +12,12 @@ import threading
 import time
 import json
 import re
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Annotated, Literal, Optional, Any, Dict, Tuple
 
-from fastmcp import Context, FastMCP
+from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
@@ -74,7 +76,9 @@ and reclaim disk space on a retention schedule.
 File lifecycle:
   1. download_video(url) fetches a video into the server's output directory and
      returns its `filename` plus curated metadata. Pass an optional `convert_to`
-     to download and transcode in a single call.
+     to download and transcode in a single call. If it takes longer than 20 s it
+     returns {job_id, status: "pending"}; call get_download_result(job_id) until
+     it finishes.
   2. Fetch the bytes over HTTP at GET /files/{filename} using the same bearer
      token (URL-encode the filename — yt-dlp emits unicode chars in some ids).
   3. convert_video(filename, target_format) re-encodes a file already in the
@@ -99,9 +103,6 @@ prompt.
 # Initialize FastMCP server
 mcp = FastMCP("Media Processing Sidecar", auth=_auth, instructions=SERVER_INSTRUCTIONS)
 mcp.add_middleware(UsageMiddleware("ytdlp"))
-
-# Progress tracking storage (in-memory, keyed by task ID)
-progress_store = {}
 
 # Cache for yt-dlp version info (check once per hour)
 _version_cache = {"version": None, "latest_version": None, "update_available": None, "last_check": None}
@@ -298,54 +299,6 @@ def get_ytdlp_version_info(force_check: bool = False) -> Dict[str, Any]:
     }
 
 
-def _emit(ctx: Optional["Context"], message: str) -> None:
-    """Best-effort ctx.info() that is safe to call from sync tool bodies.
-
-    fastmcp's ``ctx.info`` is a coroutine. The tools here stay synchronous so
-    that direct (non-MCP) callers and the test suite can invoke them without an
-    event loop. When a loop *is* running (the normal MCP server path) we schedule
-    the log; otherwise we no-op. Logging must never break a download.
-    """
-    if ctx is None:
-        return
-    try:
-        import asyncio
-
-        coro = ctx.info(message)
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            loop.create_task(coro)
-        else:  # no loop: close the coroutine to avoid "never awaited" warnings
-            coro.close()
-    except Exception:
-        pass
-
-
-def _emit_progress(
-    ctx: Optional["Context"], progress: float, total: float, message: str = ""
-) -> None:
-    """Best-effort ctx.report_progress() mirroring :func:`_emit`'s loop handling."""
-    if ctx is None:
-        return
-    try:
-        import asyncio
-
-        coro = ctx.report_progress(progress=progress, total=total, message=message)
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            loop.create_task(coro)
-        else:
-            coro.close()
-    except Exception:
-        pass
-
-
 def parse_ytdlp_error(stderr: str, url: str) -> str:
     """
     Parse yt-dlp stderr output to extract user-friendly error messages.
@@ -463,44 +416,113 @@ cleanup_thread = threading.Thread(target=run_cleanup_periodically, daemon=True)
 cleanup_thread.start()
 
 
+# Long-job pattern (fleet standard, see mcp-bildsprache): the Cloudflare portal
+# severs a request after ~60 s, so a download runs on a worker thread and the
+# tool waits at most INLINE_WAIT_SECONDS before handing back a job handle.
+INLINE_WAIT_SECONDS = 20
+# ponytail: in-memory and unbounded, lost on restart; downloads are rare.
+# Evict finished jobs if this ever holds more than a few hundred entries.
+_jobs: dict[str, Future] = {}
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="download")
+
+
+class DownloadJob(_DictCompatModel):
+    """Handle for a download still running after the inline wait."""
+
+    job_id: str
+    status: Literal["pending"] = "pending"
+    poll_with: dict[str, Any] = Field(
+        default_factory=lambda: {"tool": "get_download_result", "wait_seconds": INLINE_WAIT_SECONDS},
+        description="Call this tool with the job_id to long-poll for the result",
+    )
+
+
+async def _wait_for_job(job_id: str, wait_seconds: float) -> "DownloadResult | DownloadJob | ErrorResult":
+    fut = _jobs[job_id]
+    # asyncio.wait never cancels what it waits on, so the download outlives this request.
+    await asyncio.wait({asyncio.wrap_future(fut)}, timeout=max(0, min(wait_seconds, INLINE_WAIT_SECONDS)))
+    if not fut.done():
+        return DownloadJob(job_id=job_id)
+    exc = fut.exception()
+    return ErrorResult(error=str(exc)) if exc else fut.result()
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Download video (yt-dlp)",
-        readOnlyHint=False,      # writes a file into the output directory
-        destructiveHint=False,   # only creates new files, never deletes
-        idempotentHint=True,     # re-downloading the same URL converges on the same file
-        openWorldHint=True,      # reaches external sites over the network
+        read_only_hint=False,  # writes a file into the output directory
+        destructive_hint=False,  # only creates new files, never deletes
+        idempotent_hint=True,  # re-downloading the same URL converges on the same file
+        open_world_hint=True,  # reaches external sites over the network
     )
 )
-def download_video(
+async def download_video(
     url: Annotated[str, "Video URL to download (YouTube, Vimeo, etc.)"],
     cookies_file: Optional[str] = None,
-    output_directory: Optional[str] = None,
+    output_directory: Annotated[
+        Optional[str], "Subdirectory of the server output directory (paths outside it are rejected)"
+    ] = None,
     convert_to: Annotated[
         Optional[Literal["mp4", "webm", "avi", "mov", "mkv"]],
         "Optionally transcode the download to this container in the same call (e.g. 'download as webm')",
     ] = None,
-    ctx: Context | None = None,
-) -> DownloadResult | ErrorResult:
+) -> DownloadResult | DownloadJob | ErrorResult:
     """[media] Download a video from a URL using yt-dlp.
+
+    Waits up to 20 s. If the download is still running it returns
+    {job_id, status: "pending", poll_with}; call get_download_result(job_id)
+    until the status is "success" or "error".
 
     Args:
         url: Video URL to download
-        cookies_file: Optional path to cookies file for authentication
-        output_directory: Optional output directory path. Defaults to OUTPUT_DIRECTORY env var or /data.
+        cookies_file: Optional plain filename of a cookies file in the output directory
+        output_directory: Optional subdirectory of the output directory.
         convert_to: Optional target container (mp4/webm/avi/mov/mkv). When set, the
             downloaded file is transcoded with FFmpeg before returning, so a single
             "download this as webm" intent resolves in one call.
 
     Returns:
         DownloadResult on success (status/filename/path/metadata, plus converted_to
-        when convert_to was set); ErrorResult ({'status': 'error', ...}) on failure.
+        when convert_to was set); DownloadJob while still running; ErrorResult
+        ({'status': 'error', ...}) on failure.
     """
+    job_id = uuid.uuid4().hex
+    _jobs[job_id] = _executor.submit(_run_download, url, cookies_file, output_directory, convert_to)
+    return await _wait_for_job(job_id, INLINE_WAIT_SECONDS)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get download result",
+        read_only_hint=True,
+        idempotent_hint=True,
+        open_world_hint=False,
+    )
+)
+async def get_download_result(
+    job_id: Annotated[str, "job_id from a pending download_video response"],
+    wait_seconds: Annotated[int, "Long-poll up to this many seconds (max 20)"] = INLINE_WAIT_SECONDS,
+) -> DownloadResult | DownloadJob | ErrorResult:
+    """[media] Poll a download that download_video returned as pending.
+
+    Returns the DownloadResult or ErrorResult once finished, otherwise the same
+    pending handle; poll again. Jobs live in memory and are lost on a server restart.
+    """
+    if job_id not in _jobs:
+        return ErrorResult(error=f"Unknown job_id {job_id!r} (never dispatched, or the server restarted)")
+    return await _wait_for_job(job_id, wait_seconds)
+
+
+def _run_download(
+    url: str,
+    cookies_file: Optional[str] = None,
+    output_directory: Optional[str] = None,
+    convert_to: Optional[str] = None,
+) -> DownloadResult | ErrorResult:
+    """Blocking download; runs on the worker thread."""
     try:
         print(f"[download_video] Request received")
         print(f"[download_video] URL: {url}")
-        _emit(ctx, f"download_video: validating {url}")
-        _emit_progress(ctx, 0, 100, "validating")
 
         try:
             _validate_url(url)
@@ -518,9 +540,12 @@ def download_video(
             except ValueError as e:
                 return ErrorResult(error=str(e), url=url)
 
-        # Determine output directory (parameter takes precedence over env var)
-        output_dir = output_directory if output_directory else OUTPUT_DIR
-        output_dir_path = Path(output_dir)
+        # output_directory is confined to OUTPUT_DIR (an absolute path joins as itself).
+        base = Path(OUTPUT_DIR).resolve()
+        output_dir_path = (base / output_directory).resolve() if output_directory else base
+        if not output_dir_path.is_relative_to(base):
+            return ErrorResult(error="output_directory escapes the server output directory", url=url)
+        output_dir = str(output_dir_path)
 
         # Ensure output directory exists
         output_dir_path.mkdir(parents=True, exist_ok=True)
@@ -540,15 +565,14 @@ def download_video(
 
         metadata_command.append(url)
 
-        _emit(ctx, "extracting metadata")
-        _emit_progress(ctx, 10, 100, "extracting metadata")
         try:
             # Extract metadata
             metadata_result = subprocess.run(
                 metadata_command,
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                timeout=settings.download_timeout_seconds,
             )
             # Parse JSON metadata
             metadata = json.loads(metadata_result.stdout)
@@ -557,7 +581,6 @@ def download_video(
             # Return a clear error message instead of continuing
             error_msg = parse_ytdlp_error(e.stderr, url)
             print(f"[download_video] metadata extraction failed: {error_msg}")
-            _emit(ctx, f"metadata extraction failed: {error_msg}")
             return ErrorResult(error=error_msg, url=url)
         except json.JSONDecodeError as e:
             # If we can't parse metadata JSON, log warning but continue with download
@@ -609,14 +632,13 @@ def download_video(
         existing = {p.name for p in output_path.iterdir() if p.is_file()}
 
         print(f"[download_video] Starting download")
-        _emit(ctx, f"downloading {metadata.get('title') if metadata else url}")
-        _emit_progress(ctx, 30, 100, "downloading")
         # Run yt-dlp to download
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
             check=True,
+            timeout=settings.download_timeout_seconds,
         )
 
         video_extensions = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"}
@@ -656,7 +678,6 @@ def download_video(
             )
 
         print(f"[download_video] Download complete: {downloaded.name}")
-        _emit(ctx, f"download complete: {downloaded.name}")
         most_recent = downloaded
 
         # Curated metadata (kept identical to the historical dict shape).
@@ -681,12 +702,9 @@ def download_video(
 
         # Optional one-call transcode ("download this as webm").
         if convert_to and most_recent.suffix.lower().lstrip(".") != convert_to:
-            _emit(ctx, f"converting to {convert_to}")
-            _emit_progress(ctx, 80, 100, f"converting to {convert_to}")
             conv = _convert_file(most_recent.name, convert_to)
             if isinstance(conv, ErrorResult):
                 return conv
-            _emit_progress(ctx, 100, 100, "done")
             return DownloadResult(
                 filename=conv.filename,
                 path=conv.path,
@@ -694,7 +712,6 @@ def download_video(
                 converted_to=convert_to,
             )
 
-        _emit_progress(ctx, 100, 100, "done")
         return DownloadResult(
             filename=most_recent.name,
             path=str(most_recent),
@@ -702,14 +719,16 @@ def download_video(
             converted_to=convert_to if convert_to else None,
         )
 
+    except subprocess.TimeoutExpired:
+        return ErrorResult(
+            error=f"yt-dlp timed out after {settings.download_timeout_seconds}s", url=url
+        )
     except subprocess.CalledProcessError as e:
         error_msg = parse_ytdlp_error(e.stderr, url if 'url' in locals() else "unknown URL")
         print(f"[download_video] Download failed: {error_msg}")
-        _emit(ctx, f"download failed: {error_msg}")
         return ErrorResult(error=error_msg, url=url if 'url' in locals() else None)
     except Exception as e:
         print(f"[download_video] Unexpected error: {e}")
-        _emit(ctx, f"unexpected error: {e}")
         return ErrorResult(error=str(e))
 
 
@@ -726,7 +745,6 @@ CODEC_MAP = {
 def _convert_file(
     video_filename: str,
     target_format: str,
-    ctx: Optional["Context"] = None,
 ):
     """Transcode a file already in OUTPUT_DIR. Returns ConvertResult | ErrorResult.
 
@@ -764,10 +782,8 @@ def _convert_file(
             str(output_path)
         ]
 
-        _emit(ctx, f"transcoding {safe_filename} -> {target_format}")
         # Run FFmpeg with timeout to prevent indefinite blocking
         subprocess.run(command, check=True, capture_output=True, timeout=600)
-        _emit(ctx, f"transcode complete: {output_filename}")
 
         return ConvertResult(
             filename=output_filename,
@@ -786,16 +802,15 @@ def _convert_file(
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Convert video format (FFmpeg)",
-        readOnlyHint=False,      # writes a new transcoded file
-        destructiveHint=False,   # creates a sibling file; leaves the source intact
-        idempotentHint=True,     # re-running overwrites to the same output (-y)
-        openWorldHint=False,     # local FFmpeg only, no network
+        read_only_hint=False,      # writes a new transcoded file
+        destructive_hint=False,   # creates a sibling file; leaves the source intact
+        idempotent_hint=True,     # re-running overwrites to the same output (-y)
+        open_world_hint=False,     # local FFmpeg only, no network
     )
 )
 def convert_video(
     video_filename: Annotated[str, "Name of the video file in the output directory (filename only, no path)"],
     target_format: Literal["mp4", "webm", "avi", "mov", "mkv"],
-    ctx: Context | None = None,
 ) -> ConvertResult | ErrorResult:
     """[media] Convert a video file to a different format using FFmpeg.
 
@@ -806,16 +821,16 @@ def convert_video(
     Returns:
         ConvertResult on success (status/filename/path); ErrorResult on failure.
     """
-    return _convert_file(video_filename, target_format, ctx=ctx)
+    return _convert_file(video_filename, target_format)
 
 
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Clean up expired downloads",
-        readOnlyHint=False,
-        destructiveHint=True,    # permanently deletes files
-        idempotentHint=False,    # what's deleted depends on age at call time
-        openWorldHint=False,
+        read_only_hint=False,
+        destructive_hint=True,    # permanently deletes files
+        idempotent_hint=False,    # what's deleted depends on age at call time
+        open_world_hint=False,
     )
 )
 def cleanup_files(
@@ -1076,13 +1091,12 @@ def main():
     if settings.transport == "stdio":
         mcp.run(transport="stdio")
         return
-    # fastmcp >=3.4.3 rejects non-localhost Host with 421 unless allowed_hosts set (edge CF-Access/Tailscale gated).
+    # stateless_http: stateful HTTP leaks sessions (fastmcp #5210).
     mcp.run(
         transport="streamable-http",
         host=settings.host,
         port=settings.port,
         stateless_http=True,
-        allowed_hosts=["*"],
     )
 
 

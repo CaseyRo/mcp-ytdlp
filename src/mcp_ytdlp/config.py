@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     output_directory: str = "/data"
     cleanup_retention_days: int = 7
     video_filename_format: str | None = None
+    # Hard cap per yt-dlp subprocess (metadata and download each).
+    download_timeout_seconds: int = 1800
 
     # Server transport
     transport: Literal["stdio", "http"] = "http"

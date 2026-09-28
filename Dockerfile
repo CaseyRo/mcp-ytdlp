@@ -1,8 +1,8 @@
 FROM python:3.12-slim-bookworm
 
-# Install system dependencies: ffmpeg for media processing
+# System deps: ffmpeg for media processing; ca-certificates for httpx2 (OS trust store)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get install -y --no-install-recommends ffmpeg ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
