@@ -147,9 +147,9 @@ Downloads a video from a URL using yt-dlp.
 - `output_directory` (optional, string): Subdirectory of the output directory; paths that resolve outside it are rejected
 - `convert_to` (optional, string): Transcode the download to `mp4`/`webm`/`avi`/`mov`/`mkv` in the same call (e.g. "download this as webm"). When set, the response `filename` points at the converted file and `converted_to` echoes the target container.
 
-Waits up to 20 s. A longer download keeps running in the background and the tool returns `{"job_id": "...", "status": "pending", "poll_with": {"tool": "get_download_result", "wait_seconds": 20}}`; call `get_download_result(job_id)` until `status` is `success` or `error`. Each yt-dlp subprocess is capped at `DOWNLOAD_TIMEOUT_SECONDS` (default 1800).
+Waits up to 20 s. A longer download keeps running in the background and the tool returns `{"job_id": "...", "status": "pending", "poll_with": {"tool": "get_download_result", "wait_seconds": 20}}`; call `get_download_result(job_id)` until `status` is `success`; a failed download raises a tool error. Each yt-dlp subprocess is capped at `DOWNLOAD_TIMEOUT_SECONDS` (default 1800).
 
-This tool is annotated `openWorldHint=true` (reaches external sites) and `idempotentHint=true` (re-downloading the same URL converges on the same file). The result is returned as a typed `DownloadResult` so clients receive an output schema; the legacy top-level fields (`status`, `filename`, `path`, `metadata`) are unchanged.
+This tool is annotated `open_world_hint=true` (reaches external sites) and `idempotent_hint=true` (re-downloading the same URL converges on the same file). The result is returned as a typed `DownloadResult` so clients receive an output schema; the legacy top-level fields (`status`, `filename`, `path`, `metadata`) are unchanged.
 
 **Example Request**:
 ```json
@@ -222,13 +222,7 @@ This tool is annotated `openWorldHint=true` (reaches external sites) and `idempo
 - `latest_available_version`: Latest available version from PyPI (checked periodically)
 - `update_available`: Boolean indicating if a newer version is available
 
-**Error Response**:
-```json
-{
-  "status": "error",
-  "error": "Download failed: [error message]"
-}
-```
+**Errors**: every tool raises an MCP tool error (`isError: true`) on failure; the message says what went wrong (e.g. `Video is private: ...`). There is no `{"status": "error"}` payload.
 
 ### `convert_video`
 
@@ -278,7 +272,7 @@ Manually triggers cleanup of old files.
 }
 ```
 
-`cleanup_files` is annotated `destructiveHint=true` so clients can gate it behind a confirmation. Retention is normally handled automatically by the hourly background sweep — only call this tool when the user explicitly asks to free space.
+`cleanup_files` is annotated `destructive_hint=true` so clients can gate it behind a confirmation. Retention is normally handled automatically by the hourly background sweep — only call this tool when the user explicitly asks to free space.
 
 ## MCP Resources
 
