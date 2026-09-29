@@ -1,458 +1,136 @@
-# YTDLP MCP Service
+# mcp-ytdlp
 
 [![PyPI](https://img.shields.io/pypi/v/mcp-ytdlp)](https://pypi.org/project/mcp-ytdlp/)
 
-## Installation
+An MCP server that downloads videos with [yt-dlp](https://github.com/yt-dlp/yt-dlp), converts them with FFmpeg, and cleans up old files. It is meant for people who want an AI assistant (Claude, or any MCP client) to fetch and transcode media on a server they control, over HTTP or stdio. Built on [FastMCP](https://gofastmcp.com) 4.
+
+## Requirements
+
+- Python 3.10 or newer
+- FastMCP 4 (`fastmcp>=4.0.10,<5.0.0`, installed as a dependency)
+- FFmpeg on the `PATH` (the Docker image includes it)
+- No upstream account. Private or age-restricted videos need a cookies file exported from your browser.
+
+## Install and run
+
+### Local
 
 ```bash
-pip install mcp-ytdlp
-# or run directly without installing:
-uvx mcp-ytdlp
+pip install mcp-ytdlp        # or: uvx mcp-ytdlp
+MCP_API_KEY=change-me OUTPUT_DIRECTORY=./data mcp-ytdlp
 ```
 
-A FastMCP-based microservice for downloading videos, converting formats, and managing media files. Standalone service accessible via MCP protocol over HTTP.
+This starts a streamable HTTP server on `127.0.0.1:8000`, with the MCP endpoint at `/mcp`. For a local stdio client, set `TRANSPORT=stdio` (no API key needed).
 
-## Overview
+### Docker
 
-This service provides MCP (Model Context Protocol) tools for media processing operations:
-- **Video Download**: Download videos from URLs using yt-dlp with optional authentication (includes video metadata and thumbnails)
-- **Video Conversion**: Convert videos between formats using FFmpeg
-- **File Cleanup**: Automatic and manual cleanup of old files
+The image builds from source:
 
-The service runs as a standalone Docker container, providing MCP tools for media processing operations via HTTP.
+```bash
+export MCP_API_KEY=change-me
+docker compose up -d --build
+```
 
-## Quick Start
-
-### Prerequisites
-
-- Docker and Docker Compose installed
-- Network access for downloading videos
-
-### Installation
-
-1. **Copy service files** to your project directory:
-   - `main.py`
-   - `Dockerfile`
-   - `pyproject.toml` and `uv.lock`
-   - `docker-compose.yaml` (or update your existing one)
-
-2. **Update docker-compose.yaml** with your volume paths:
-   ```yaml
-   volumes:
-     - /path/to/your/data:/data  # Update to your desired data directory
-   ```
-
-3. **Configure environment variables** (see Configuration section below)
-
-4. **Start the service**:
-   ```bash
-   docker-compose up -d
-   ```
-
-5. **Verify the service is running**:
-   ```bash
-   docker-compose logs ytdlp-mcp
-   ```
-
-### Basic Usage
-
-The MCP server is accessible via HTTP on port 8000. Connect your MCP client to:
-- `http://ytdlp-mcp:8000` (from within Docker network)
-- `http://localhost:8000` (from host machine)
+`docker-compose.yaml` publishes the server on host port `8718` (override with `HOST_PORT`) and stores files in the `ytdlp_output` volume (override with `OUTPUT_HOST_DIR`). The container exposes `/health` for health checks.
 
 ## Configuration
 
-### Environment Variables
+All settings are environment variables.
 
-All configuration is done via environment variables in `docker-compose.yaml`:
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MCP_API_KEY` | none | Bearer token clients must send. Required when `TRANSPORT=http`; the server refuses to start without it. |
+| `TRANSPORT` | `http` | `http` (streamable HTTP) or `stdio` |
+| `HOST` | `127.0.0.1` | Bind address (the Docker image sets `0.0.0.0`) |
+| `PORT` | `8000` | Bind port |
+| `OUTPUT_DIRECTORY` | `/data` | Where downloads and conversions are written |
+| `CLEANUP_RETENTION_DAYS` | `7` | Files older than this are removed by the hourly sweep (minimum 1) |
+| `VIDEO_FILENAME_FORMAT` | `%(extractor_key)s-%(id).60s.%(ext)s` | yt-dlp output template, for example `%(title).100s.%(ext)s` |
+| `DOWNLOAD_TIMEOUT_SECONDS` | `1800` | Hard cap per yt-dlp subprocess |
 
-#### `OUTPUT_DIRECTORY`
-- **Default**: `/data`
-- **Description**: Directory where all downloaded videos and converted videos are saved
-- **Example**:
-  ```yaml
-  environment:
-    - OUTPUT_DIRECTORY=/mnt/storage/videos
-  ```
+The default filename template caps the id at 60 characters so that long signed CDN URLs do not exceed filesystem name limits.
 
-#### `CLEANUP_RETENTION_DAYS`
-- **Default**: `7`
-- **Description**: Number of days to retain files before automatic cleanup removes them
-- **Example**:
-  ```yaml
-  environment:
-    - CLEANUP_RETENTION_DAYS=14
-  ```
+## Authentication
 
-#### `VIDEO_FILENAME_FORMAT`
-- **Default**: `%(id)s.%(ext)s` (uses video ID from URL, e.g., `dQw4w9WgXcQ.mp4`)
-- **Description**: Filename format for downloaded videos using yt-dlp formatting syntax
-- **Format Variables**: `%(title)s`, `%(id)s`, `%(ext)s`, `%(uploader)s`, `%(upload_date)s`, etc.
-- **Note**: The default uses `%(id)s` which extracts the video ID from the URL (the last meaningful part)
-- **Example**:
-  ```yaml
-  environment:
-    - VIDEO_FILENAME_FORMAT=%(id)s.%(ext)s
-  ```
-  Or with title (limited to 100 chars):
-  ```yaml
-  environment:
-    - VIDEO_FILENAME_FORMAT=%(title).100s.%(ext)s
-  ```
-  Or with uploader and ID:
-  ```yaml
-  environment:
-    - VIDEO_FILENAME_FORMAT=%(uploader)s - %(id)s.%(ext)s
-  ```
+Over HTTP every MCP request, and every `GET /files/{filename}` request, must carry `Authorization: Bearer <MCP_API_KEY>`. The token is compared in constant time. Put the server behind your own gateway or reverse proxy if you need anything beyond a shared key.
 
-### Docker Compose Configuration
-
-Example `docker-compose.yaml` configuration:
-
-```yaml
-services:
-  ytdlp-mcp:
-    build: .
-    container_name: ytdlp-mcp
-    restart: unless-stopped
-    volumes:
-      - /mnt/data/AI/n8n:/data
-    environment:
-      - OUTPUT_DIRECTORY=/data
-      - CLEANUP_RETENTION_DAYS=7
-      - VIDEO_FILENAME_FORMAT=%(id)s.%(ext)s
-    ports:
-      - "8000:8000"
-    networks:
-      - ytdlp-network
-
-networks:
-  ytdlp-network:
-    driver: bridge
-```
-
-## MCP Tools Reference
-
-### `get_download_result`
-
-Long-polls a download that `download_video` returned as pending. Parameters: `job_id` (required), `wait_seconds` (optional, max 20). Returns the same shapes as `download_video`. Read-only. Jobs live in memory and are lost on restart.
-
-### `download_video`
-
-Downloads a video from a URL using yt-dlp.
-
-**Parameters**:
-- `url` (required, string): Video URL to download
-- `cookies_file` (optional, string): Plain filename of a cookies file in the output directory
-- `output_directory` (optional, string): Subdirectory of the output directory; paths that resolve outside it are rejected
-- `convert_to` (optional, string): Transcode the download to `mp4`/`webm`/`avi`/`mov`/`mkv` in the same call (e.g. "download this as webm"). When set, the response `filename` points at the converted file and `converted_to` echoes the target container.
-
-Waits up to 20 s. A longer download keeps running in the background and the tool returns `{"job_id": "...", "status": "pending", "poll_with": {"tool": "get_download_result", "wait_seconds": 20}}`; call `get_download_result(job_id)` until `status` is `success`; a failed download raises a tool error. Each yt-dlp subprocess is capped at `DOWNLOAD_TIMEOUT_SECONDS` (default 1800).
-
-This tool is annotated `open_world_hint=true` (reaches external sites) and `idempotent_hint=true` (re-downloading the same URL converges on the same file). The result is returned as a typed `DownloadResult` so clients receive an output schema; the legacy top-level fields (`status`, `filename`, `path`, `metadata`) are unchanged.
-
-**Example Request**:
-```json
-{
-  "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-  "cookies_file": "cookies.txt",
-  "convert_to": "webm"
-}
-```
-
-**Example Response**:
-```json
-{
-  "status": "success",
-  "filename": "video.mp4",
-  "path": "/data/video.mp4",
-  "metadata": {
-    "id": "dQw4w9WgXcQ",
-    "title": "Video Title",
-    "description": "Video description...",
-    "duration": 212,
-    "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg",
-    "thumbnails": [
-      {
-        "url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg",
-        "width": 120,
-        "height": 90
-      },
-      {
-        "url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
-        "width": 480,
-        "height": 360
-      }
-    ],
-    "uploader": "Channel Name",
-    "uploader_id": "channel_id",
-    "channel": "Channel Name",
-    "channel_id": "channel_id",
-    "upload_date": "20230101",
-    "view_count": 1234567,
-    "like_count": 12345,
-    "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-  },
-  "yt_dlp": {
-    "yt_dlp_version": "2025.12.08",
-    "latest_available_version": "2025.12.10",
-    "update_available": true
-  }
-}
-```
-
-**Metadata Fields**:
-- `id`: Video ID
-- `title`: Video title
-- `description`: Video description
-- `duration`: Duration in seconds
-- `thumbnail`: Primary thumbnail URL
-- `thumbnails`: Array of thumbnail objects with different resolutions (each has `url`, `width`, `height`)
-- `uploader`: Uploader/channel name
-- `uploader_id`: Uploader ID
-- `channel`: Channel name
-- `channel_id`: Channel ID
-- `upload_date`: Upload date in YYYYMMDD format
-- `view_count`: View count (if available)
-- `like_count`: Like count (if available)
-- `webpage_url`: URL to the video page
-
-**Version Information** (`yt_dlp` object):
-- `yt_dlp_version`: Currently installed version of yt-dlp
-- `latest_available_version`: Latest available version from PyPI (checked periodically)
-- `update_available`: Boolean indicating if a newer version is available
-
-**Errors**: every tool raises an MCP tool error (`isError: true`) on failure; the message says what went wrong (e.g. `Video is private: ...`). There is no `{"status": "error"}` payload.
-
-### `convert_video`
-
-Converts a video file to a different format using FFmpeg.
-
-**Parameters**:
-- `video_filename` (required, string): Name of the video file to convert (must exist in output directory)
-- `target_format` (required, string): Target format (mp4, webm, avi, mov, etc.)
-
-**Example Request**:
-```json
-{
-  "video_filename": "video.mp4",
-  "target_format": "webm"
-}
-```
-
-**Example Response**:
-```json
-{
-  "status": "success",
-  "filename": "video.webm",
-  "path": "/data/video.webm"
-}
-```
-
-### `cleanup_files`
-
-Manually triggers cleanup of old files.
-
-**Parameters**:
-- `retention_days` (optional, integer): Override retention period for this cleanup (defaults to `CLEANUP_RETENTION_DAYS`)
-
-**Example Request**:
-```json
-{
-  "retention_days": 3
-}
-```
-
-**Example Response**:
-```json
-{
-  "status": "success",
-  "files_deleted": 5,
-  "retention_days": 3
-}
-```
-
-`cleanup_files` is annotated `destructive_hint=true` so clients can gate it behind a confirmation. Retention is normally handled automatically by the hourly background sweep — only call this tool when the user explicitly asks to free space.
-
-## MCP Resources
-
-Reference data is exposed as resources so a client can read it without spending a tool call:
-
-- `ytdlp://formats` — supported transcode targets and the FFmpeg codecs used per container
-- `ytdlp://retention` — retention window, swept extensions, and sweep cadence
-- `ytdlp://version` — installed yt-dlp version and whether a newer PyPI release exists (cached ~1h)
-- `ytdlp://config` — non-secret runtime config (output dir, filename template, transport, file-fetch route)
-
-## MCP Prompts
-
-Guided workflows for the signature multi-step jobs:
-
-- `download_and_convert` — download a video and optionally transcode it to a target format in one step
-- `authenticated_download` — download a private / age-restricted video using a cookies file
-
-## MCP Client Setup
-
-The MCP server is accessible via HTTP transport on port 8000, allowing network-based access from any MCP client.
-
-### HTTP Endpoint
-
-- **Docker Network**: `http://ytdlp-mcp:8000`
-- **Host Machine**: `http://localhost:8000`
-
-### Claude Desktop
-
-To connect Claude Desktop to this MCP server, add the following to your Claude Desktop MCP configuration:
+Example client entry:
 
 ```json
 {
   "mcpServers": {
-    "ytdlp-mcp": {
-      "url": "http://localhost:8000",
-      "transport": "http"
+    "ytdlp": {
+      "url": "http://localhost:8718/mcp",
+      "headers": { "Authorization": "Bearer change-me" }
     }
   }
 }
 ```
 
-### Other MCP Clients
+## Tools
 
-The service uses standard MCP protocol over HTTP, making it compatible with any MCP client that supports HTTP transport. Configure your client to connect to:
-- `http://ytdlp-mcp:8000` (from within Docker network)
-- `http://localhost:8000` (from host)
+| Tool | What it does |
+| --- | --- |
+| `download_video` | Download a URL with yt-dlp, optionally transcoding it in the same call (`convert_to`: mp4, webm, avi, mov, mkv). Starts a job and waits up to 20 s. |
+| `get_download_result` | Long-poll a download that `download_video` returned as pending. Read-only. |
+| `convert_video` | Transcode a file in the output directory with FFmpeg (`video_filename`, `target_format`: mp4, webm, avi, mov, mkv). |
+| `cleanup_files` | Delete files older than the retention window now (`retention_days`, minimum 1). Marked destructive; the hourly sweep normally handles this. |
 
-## Troubleshooting
+### Downloads: job and poll
 
-### Common Issues
+Downloads often take longer than a client or proxy will hold a request open, so `download_video` runs the download on a worker thread and waits at most 20 seconds:
 
-#### Container won't start
-- **Check Docker logs**: `docker-compose logs ytdlp-mcp`
-- **Verify volume paths exist**: Ensure your configured data directory path exists
-- **Check permissions**: Ensure the directory has appropriate read/write permissions
-- **Verify environment variable syntax**: Check for typos in docker-compose.yaml
-
-#### Downloads fail
-- **Verify network connectivity**: Ensure the container can reach the internet
-- **Check cookies file path**: If using authentication, verify the cookies file path is correct and accessible
-- **Review yt-dlp errors**: Check container logs for detailed error messages
-- **Test URL manually**: Verify the video URL is accessible
-
-#### Files not accessible
-- **Verify volume mount**: Ensure the volume path in docker-compose.yaml is correct
-- **Check file permissions**: Files should be readable/writable
-- **Verify OUTPUT_DIRECTORY**: Ensure it matches the volume mount point in docker-compose.yaml
-- **Check file paths**: Use the exact filename returned by the MCP tool
-
-#### MCP client can't connect
-- **Verify port is exposed**: Check `ports: - "8000:8000"` in docker-compose.yaml
-- **Test HTTP endpoint**: Try `curl http://localhost:8000` from host
-- **Check firewall**: Ensure port 8000 is not blocked
-- **Verify container is running**: `docker-compose ps`
-
-### Debugging
-
-**View container logs**:
-```bash
-docker-compose logs -f ytdlp-mcp
-```
-
-**Check container status**:
-```bash
-docker-compose ps
-```
-
-**Test HTTP endpoint**:
-```bash
-curl http://localhost:8000
-```
-
-**Execute commands in container**:
-```bash
-docker-compose exec ytdlp-mcp /bin/bash
-```
-
-**Check file permissions**:
-```bash
-docker-compose exec ytdlp-mcp ls -la /data
-```
-
-## Examples
-
-### Basic Workflow
-
-1. **Download a video**:
+1. Call `download_video` with `url` (and optionally `cookies_file`, `output_directory`, `convert_to`).
+2. If it finishes within 20 s, you get the result directly:
    ```json
-   {
-     "url": "https://www.youtube.com/watch?v=example"
-   }
+   {"status": "success", "filename": "Youtube-dQw4w9WgXcQ.mp4", "path": "/data/Youtube-dQw4w9WgXcQ.mp4", "metadata": {"title": "...", "duration": 212}}
    ```
-
-2. **Access video metadata** (included in download response):
-   The download response includes a `metadata` object with thumbnail URLs, video information, and statistics.
-
-3. **Convert to WebM format**:
+3. Otherwise you get a job handle, and the download keeps running:
    ```json
-   {
-     "video_filename": "downloaded_video.mp4",
-     "target_format": "webm"
-   }
+   {"job_id": "3f2a...", "status": "pending", "poll_with": {"tool": "get_download_result", "wait_seconds": 20}}
    ```
+4. Call `get_download_result` with that `job_id` (and optionally `wait_seconds`, max 20). It returns the same pending handle until the download is done, then the success result. Repeat until `status` is `success`.
 
-### Using Cookies for Authentication
+A failed download raises a tool error at whichever call observes it. Jobs are held in memory and are lost when the server restarts; an unknown `job_id` raises a tool error.
 
-1. **Export cookies from browser** (using browser extension or yt-dlp)
-2. **Place cookies file in accessible location** (e.g., shared volume)
-3. **Download with authentication**:
-   ```json
-   {
-     "url": "https://www.youtube.com/watch?v=age-restricted-video",
-     "cookies_file": "/data/cookies.txt"
-   }
-   ```
+`cookies_file` is a plain filename of a cookies file placed in the output directory. `output_directory` is a subdirectory of the output directory; paths that resolve outside it are rejected. The success result includes video metadata (title, uploader, duration, thumbnails, counts) and, when `convert_to` was set, `converted_to`.
 
-### Custom Filename Formats
+To fetch the file bytes without sharing the volume, request `GET /files/{filename}` with the bearer token, URL-encoding the filename from the tool result.
 
-**Default - Video ID from URL**:
-```yaml
-environment:
-  - VIDEO_FILENAME_FORMAT=%(id)s.%(ext)s
-```
-This uses the video ID extracted from the URL (e.g., `dQw4w9WgXcQ.mp4` for YouTube videos).
+### Errors
 
-**Title with 100 char limit**:
-```yaml
-environment:
-  - VIDEO_FILENAME_FORMAT=%(title).100s.%(ext)s
-```
+Every tool raises an MCP tool error (`isError: true`) on failure, with a message that says what went wrong (for example `Video is private: ...`). There is no `{"status": "error"}` payload.
 
-**Organize by uploader and date**:
-```yaml
-environment:
-  - VIDEO_FILENAME_FORMAT=%(uploader)s/%(upload_date)s - %(id)s.%(ext)s
+### Resources and prompts
+
+- `ytdlp://formats`: supported transcode targets and codecs
+- `ytdlp://retention`: retention window and sweep cadence
+- `ytdlp://version`: installed yt-dlp version and whether a newer release exists
+- `ytdlp://config`: non-secret runtime configuration
+- Prompts: `download_and_convert`, `authenticated_download`
+
+### Usage telemetry
+
+A small middleware (`usage.py`) writes one JSON line per tool call to stderr with the server name, tool name, duration, outcome and protocol version. It never logs arguments or results.
+
+## Development
+
+```bash
+uv sync
+uv run pytest
+uv run ruff check src tests
 ```
 
-**Simple title-based naming**:
-```yaml
-environment:
-  - VIDEO_FILENAME_FORMAT=%(title)s.%(ext)s
-```
+CI (`.github/workflows/ci.yml`) runs lint and tests as the `test` check on every pull request. `main` is protected and changes land through pull requests.
 
-## Architecture
+## Releases
 
-This service runs as a standalone Docker container providing MCP tools for media processing:
+Releases are tag-only. After a merge to `main`, the release workflow tests the code and pushes the next `v*` patch tag; nothing is committed back to `main`. The tag triggers the PyPI publish, and the wheel takes its version from the tag. Do not bump `version` in `pyproject.toml` by hand.
 
-- **Isolation**: Video processing runs in its own container, isolated from other services
-- **Persistent Storage**: Volume mount (`/data`) for file storage and access
-- **Network Communication**: MCP protocol over HTTP enables LLM integration
-- **Automatic Cleanup**: Background thread removes old files based on configurable retention period
+## Support
 
-### Benefits
-
-- **Standalone**: No dependencies on other services
-- **Flexibility**: Configurable via environment variables
-- **Integration**: Direct LLM access via MCP protocol
-- **Maintainability**: Simple, focused service for media processing operations
+If this server saves you time, you can [buy me a coffee](https://buymeacoffee.com/caseyberlin).
 
 ## License
 
 Released under the [MIT License](LICENSE). Copyright (c) 2026 Casey Romkes.
-
