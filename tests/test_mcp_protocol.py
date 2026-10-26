@@ -17,14 +17,14 @@ import threading
 os.environ.setdefault("TRANSPORT", "stdio")
 os.environ.setdefault("OUTPUT_DIRECTORY", tempfile.mkdtemp(prefix="mcp_ytdlp_test_"))
 
-from pathlib import Path  # noqa: E402
+from pathlib import Path
 
-import pytest  # noqa: E402
-from fastmcp import Client  # noqa: E402
-from fastmcp.exceptions import ToolError  # noqa: E402
+import pytest
+from fastmcp import Client
+from fastmcp.exceptions import ToolError
 
-from mcp_ytdlp import server  # noqa: E402
-from mcp_ytdlp.server import mcp  # noqa: E402
+from mcp_ytdlp import server
+from mcp_ytdlp.server import mcp
 
 pytestmark = pytest.mark.anyio
 

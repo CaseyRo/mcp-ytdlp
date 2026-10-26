@@ -21,7 +21,7 @@ import os
 # unless TRANSPORT=stdio. Server import also mkdir()s OUTPUT_DIRECTORY.
 # Set both before the import below.
 os.environ.setdefault("TRANSPORT", "stdio")
-import tempfile  # noqa: E402
+import tempfile
 
 _TEST_OUTDIR = tempfile.mkdtemp(prefix="mcp_ytdlp_test_")
 os.environ.setdefault("OUTPUT_DIRECTORY", _TEST_OUTDIR)

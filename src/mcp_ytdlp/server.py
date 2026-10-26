@@ -6,16 +6,16 @@ FastMCP server for video download, conversion, and cleanup
 
 import asyncio
 import hmac
-import subprocess
-import uuid
-import threading
-import time
 import json
 import re
+import subprocess
+import threading
+import time
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Annotated, Literal, Optional, Any, Dict
+from pathlib import Path
+from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -138,20 +138,20 @@ class _DictCompatModel(BaseModel):
 class VideoMetadata(_DictCompatModel):
     """Curated subset of yt-dlp metadata (the ~15 fields clients actually use)."""
 
-    id: Optional[str] = None
-    title: Optional[str] = None
-    description: Optional[str] = None
-    duration: Optional[float] = None
-    thumbnail: Optional[str] = None
+    id: str | None = None
+    title: str | None = None
+    description: str | None = None
+    duration: float | None = None
+    thumbnail: str | None = None
     thumbnails: list[Any] = Field(default_factory=list)
-    uploader: Optional[str] = None
-    uploader_id: Optional[str] = None
-    channel: Optional[str] = None
-    channel_id: Optional[str] = None
-    upload_date: Optional[str] = None
-    view_count: Optional[int] = None
-    like_count: Optional[int] = None
-    webpage_url: Optional[str] = None
+    uploader: str | None = None
+    uploader_id: str | None = None
+    channel: str | None = None
+    channel_id: str | None = None
+    upload_date: str | None = None
+    view_count: int | None = None
+    like_count: int | None = None
+    webpage_url: str | None = None
 
 
 class DownloadResult(_DictCompatModel):
@@ -160,10 +160,10 @@ class DownloadResult(_DictCompatModel):
     status: Literal["success"] = "success"
     filename: str = Field(description="Plain filename in the output directory; fetch at /files/{filename}")
     path: str = Field(description="Absolute path of the written file on the server")
-    metadata: Optional[VideoMetadata] = Field(
+    metadata: VideoMetadata | None = Field(
         default=None, description="Curated video metadata, when extraction succeeded"
     )
-    converted_to: Optional[str] = Field(
+    converted_to: str | None = Field(
         default=None, description="Target format if the file was transcoded in the same call"
     )
 
@@ -174,7 +174,7 @@ class ConvertResult(_DictCompatModel):
     status: Literal["success"] = "success"
     filename: str = Field(description="Filename of the transcoded output in the output directory")
     path: str = Field(description="Absolute path of the transcoded file on the server")
-    target_format: Optional[str] = Field(default=None, description="Container the file was converted to")
+    target_format: str | None = Field(default=None, description="Container the file was converted to")
 
 
 class CleanupResult(_DictCompatModel):
@@ -194,7 +194,7 @@ class ErrorResult(_DictCompatModel):
 
     status: Literal["error"] = "error"
     error: str
-    url: Optional[str] = None
+    url: str | None = None
 
 
 def get_ytdlp_version() -> str:
@@ -212,11 +212,11 @@ def get_ytdlp_version() -> str:
         return "unknown"
 
 
-def get_latest_ytdlp_version() -> Optional[str]:
+def get_latest_ytdlp_version() -> str | None:
     """Get the latest available yt-dlp version from PyPI."""
     try:
-        import urllib.request
         import urllib.error
+        import urllib.request
         
         # Query PyPI JSON API
         url = "https://pypi.org/pypi/yt-dlp/json"
@@ -228,7 +228,7 @@ def get_latest_ytdlp_version() -> Optional[str]:
         return None
 
 
-def compare_versions(current: str, latest: Optional[str]) -> bool:
+def compare_versions(current: str, latest: str | None) -> bool:
     """Compare version strings to determine if update is available."""
     if not latest or current == "unknown":
         return False
@@ -261,7 +261,7 @@ def compare_versions(current: str, latest: Optional[str]) -> bool:
         return latest > current if latest and current else False
 
 
-def get_ytdlp_version_info(force_check: bool = False) -> Dict[str, Any]:
+def get_ytdlp_version_info(force_check: bool = False) -> dict[str, Any]:
     """Get yt-dlp version information, with caching."""
     global _version_cache
     
@@ -370,7 +370,7 @@ def get_video_filename(url: str, ext: str = "mp4") -> str:
         return f"{file_id}.%(ext)s"
 
 
-def cleanup_old_files(retention_days: Optional[int] = None):
+def cleanup_old_files(retention_days: int | None = None):
     """Clean up files older than retention period."""
     if retention_days is None:
         retention_days = CLEANUP_RETENTION_DAYS
@@ -467,12 +467,12 @@ async def _wait_for_job(job_id: str, wait_seconds: float) -> "DownloadResult | D
 )
 async def download_video(
     url: Annotated[str, "Video URL to download (YouTube, Vimeo, etc.)"],
-    cookies_file: Optional[str] = None,
+    cookies_file: str | None = None,
     output_directory: Annotated[
-        Optional[str], "Subdirectory of the server output directory (paths outside it are rejected)"
+        str | None, "Subdirectory of the server output directory (paths outside it are rejected)"
     ] = None,
     convert_to: Annotated[
-        Optional[Literal["mp4", "webm", "avi", "mov", "mkv"]],
+        Literal["mp4", "webm", "avi", "mov", "mkv"] | None,
         "Optionally transcode the download to this container in the same call (e.g. 'download as webm')",
     ] = None,
 ) -> DownloadResult | DownloadJob:
@@ -524,9 +524,9 @@ async def get_download_result(
 
 def _run_download(
     url: str,
-    cookies_file: Optional[str] = None,
-    output_directory: Optional[str] = None,
-    convert_to: Optional[str] = None,
+    cookies_file: str | None = None,
+    output_directory: str | None = None,
+    convert_to: str | None = None,
 ) -> DownloadResult | ErrorResult:
     """Blocking download; runs on the worker thread."""
     try:
@@ -651,7 +651,7 @@ def _run_download(
         )
 
         video_extensions = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"}
-        downloaded: Optional[Path] = None
+        downloaded: Path | None = None
 
         # Preferred: trust the path yt-dlp printed via ``--print after_move:filepath``.
         # The flag prints exactly one line per processed video — the final path
@@ -690,7 +690,7 @@ def _run_download(
         most_recent = downloaded
 
         # Curated metadata (kept identical to the historical dict shape).
-        meta_model: Optional[VideoMetadata] = None
+        meta_model: VideoMetadata | None = None
         if metadata:
             meta_model = VideoMetadata(
                 id=metadata.get("id"),
@@ -843,7 +843,7 @@ def convert_video(
     )
 )
 def cleanup_files(
-    retention_days: Annotated[Optional[int], "Retention period in days (minimum 1). Defaults to CLEANUP_RETENTION_DAYS env var."] = None,
+    retention_days: Annotated[int | None, "Retention period in days (minimum 1). Defaults to CLEANUP_RETENTION_DAYS env var."] = None,
 ) -> CleanupResult:
     """[media] Manually trigger cleanup of old video files older than the retention period.
 
@@ -1015,6 +1015,7 @@ def authenticated_download_prompt(
 
 
 from datetime import timezone as _tz  # noqa: E402
+
 from starlette.requests import Request as _SReq  # noqa: E402
 from starlette.responses import FileResponse as _FResp  # noqa: E402
 from starlette.responses import JSONResponse as _SResp  # noqa: E402
@@ -1072,7 +1073,7 @@ async def _get_file(request: _SReq):
     sharing the /data volume. The filename comes from the tool response, so
     clients must URL-encode it (yt-dlp replaces `?` with fullwidth `？` and
     other URL chars may appear in the `id` portion).
-    """
+    """  # noqa: RUF002 - the fullwidth question mark is the point of the sentence
     auth_header = request.headers.get("authorization", "")
     token = ""
     if auth_header.lower().startswith("bearer "):
