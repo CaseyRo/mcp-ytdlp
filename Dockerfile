@@ -5,6 +5,9 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
+# Deno runs yt-dlp-ejs: without a JS runtime YouTube serves only storyboard images.
+COPY --from=denoland/deno:bin-2.5.6 /deno /usr/local/bin/deno
+
 WORKDIR /app
 
 # Copy project files and install (includes yt-dlp Python library)
