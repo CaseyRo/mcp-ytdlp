@@ -393,8 +393,15 @@ def get_video_filename(url: str, ext: str = "mp4") -> str:
         return f"{file_id}.%(ext)s"
 
 
-# Downloads, conversions and the partial files an interrupted yt-dlp leaves behind.
-DOWNLOAD_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v", ".part", ".ytdl"}
+# Everything yt-dlp writes: video, audio (convert_to), images (generic extractor, thumbnails), subtitles,
+# info files, and the partial files an interrupted download leaves behind. Cookies (.txt) are never on it.
+DOWNLOAD_EXTENSIONS = {
+    ".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v",
+    ".mp3", ".m4a", ".aac", ".opus", ".ogg", ".wav", ".flac",
+    ".jpg", ".jpeg", ".png", ".webp", ".gif",
+    ".vtt", ".srt", ".json",
+    ".part", ".ytdl",
+}
 
 
 def cleanup_old_files(retention_days: int | None = None) -> int:

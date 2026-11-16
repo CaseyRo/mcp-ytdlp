@@ -103,7 +103,8 @@ def test_retention_deletes_old_downloads_and_records_only(tmp_output_dir, monkey
     outside.mkdir()
     (root / "linked").symlink_to(outside)  # must not be followed
 
-    old = [root / "old.mp4", root / "old.mp4.part", root / "clips" / "old.webm", root / ".jobs" / ("c" * 32 + ".json")]
+    old = [root / "old.mp4", root / "old.mp4.part", root / "clips" / "old.webm", root / ".jobs" / ("c" * 32 + ".json"),
+           root / "old.mp3", root / "Generic-asset.jpg"]
     keep_old = [root / "yt-cookies.txt", root / "notes.txt", outside / "elsewhere.mp4"]
     for p in keep_old + old:
         p.write_bytes(b"x")
