@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     video_filename_format: str | None = None
     # Hard cap per yt-dlp subprocess (metadata and download each).
     download_timeout_seconds: int = 1800
+    # Server-wide cookies (Netscape format), kept outside the backed-up output dir.
+    # Used for every download when the file exists; empty string disables it.
+    ytdlp_cookies_file: str = "/run/secrets/yt-cookies.txt"
 
     # Server transport
     transport: Literal["stdio", "http"] = "http"

@@ -9,7 +9,7 @@ An MCP server that downloads videos with [yt-dlp](https://github.com/yt-dlp/yt-d
 - Python 3.10 or newer
 - FastMCP 4 (`fastmcp>=4.0.10,<5.0.0`, installed as a dependency)
 - FFmpeg on the `PATH` (the Docker image includes it)
-- No upstream account. Private or age-restricted videos need a cookies file exported from your browser.
+- No upstream account. Private or age-restricted videos need a cookies file exported from your browser (see [Cookies](#cookies)).
 
 ## Install and run
 
@@ -31,7 +31,7 @@ export MCP_API_KEY=change-me
 docker compose up -d --build
 ```
 
-`docker-compose.yaml` publishes the server on host port `8718` (override with `HOST_PORT`) and stores files in the `ytdlp_output` volume (override with `OUTPUT_HOST_DIR`). The container exposes `/health` for health checks.
+`docker-compose.yaml` publishes the server on host port `8718` (override with `HOST_PORT`) and stores files in the `ytdlp_output` volume (override with `OUTPUT_HOST_DIR`). It also mounts the host directory `/opt/secrets/ytdlp` read-only at `/run/secrets` for the cookies file; if that directory is missing, Docker creates it empty and the server runs without cookies. The container exposes `/health` for health checks.
 
 ## Configuration
 
@@ -44,7 +44,8 @@ All settings are environment variables.
 | `HOST` | `127.0.0.1` | Bind address (the Docker image sets `0.0.0.0`) |
 | `PORT` | `8000` | Bind port |
 | `OUTPUT_DIRECTORY` | `/data` | Where downloads and conversions are written |
-| `CLEANUP_RETENTION_DAYS` | `7` | Files older than this are removed by the hourly sweep (minimum 1) |
+| `CLEANUP_RETENTION_DAYS` | `7` | Downloads and job records older than this many days are deleted at startup and by the hourly sweep (minimum 1) |
+| `YTDLP_COOKIES_FILE` | `/run/secrets/yt-cookies.txt` | Netscape-format cookies used for every download when the file exists and is readable. Empty disables it. See [Cookies](#cookies) |
 | `VIDEO_FILENAME_FORMAT` | `%(extractor_key)s-%(id).60s.%(ext)s` | yt-dlp output template, for example `%(title).100s.%(ext)s` |
 | `DOWNLOAD_TIMEOUT_SECONDS` | `1800` | Hard cap per yt-dlp subprocess |
 
@@ -91,11 +92,21 @@ Downloads often take longer than a client or proxy will hold a request open, so 
    ```
 4. Call `get_download_result` with that `job_id` (and optionally `wait_seconds`, max 20). It returns the same pending handle until the download is done, then the success result. Repeat until `status` is `success`.
 
-A failed download raises a tool error at whichever call observes it. Jobs are held in memory and are lost when the server restarts; an unknown `job_id` raises a tool error.
+A failed download raises a tool error at whichever call observes it. Each job is also written to `OUTPUT_DIRECTORY/.jobs/<job_id>.json` (status, result or error, timestamps), so `get_download_result` still answers after a restart or redeploy. A download that was running when the server stopped is reported as a tool error: "Download was interrupted by a restart, start the download again". A `job_id` that was never issued, or whose record has passed the retention window, raises an "Unknown job_id" tool error.
 
-`cookies_file` is a plain filename of a cookies file placed in the output directory. `output_directory` is a subdirectory of the output directory; paths that resolve outside it are rejected. The success result includes video metadata (title, uploader, duration, thumbnails, counts) and, when `convert_to` was set, `converted_to`.
+`cookies_file` is a plain filename of a cookies file placed in the output directory; a server-wide cookies file takes precedence over it (see [Cookies](#cookies)). `output_directory` is a subdirectory of the output directory; paths that resolve outside it are rejected. The success result includes video metadata (title, uploader, duration, thumbnails, counts) and, when `convert_to` was set, `converted_to`.
 
 To fetch the file bytes without sharing the volume, request `GET /files/{filename}` with the bearer token, URL-encoding the filename from the tool result.
+
+### Retention
+
+At startup and then every hour, the server deletes files older than `CLEANUP_RETENTION_DAYS` (default 7, by file ctime) anywhere under `OUTPUT_DIRECTORY`, subfolders included: video files (`.mp4`, `.webm`, `.avi`, `.mov`, `.mkv`, `.flv`, `.m4v`), partial downloads (`.part`, `.ytdl`) and job records in `.jobs/`. Nothing else is touched, so a cookies file in the output directory stays, and nothing outside `OUTPUT_DIRECTORY` is ever deleted (symlinks are not followed). A failing sweep is logged and retried an hour later; it never stops the server. `cleanup_files` runs the same sweep on demand.
+
+### Cookies
+
+Set `YTDLP_COOKIES_FILE` (default `/run/secrets/yt-cookies.txt`) to a Netscape-format cookies export. When that file exists and is readable, every download uses it automatically; no tool argument is needed. Precedence: the server-wide file wins, and the `cookies_file` argument is then ignored. Without it, `cookies_file` works as before.
+
+The server hands yt-dlp a private temporary copy (mode 0600, deleted after the download), because yt-dlp writes the cookie jar back to the file it is given; the original can therefore sit on a read-only mount. Cookie contents are never logged. Keep the file out of `OUTPUT_DIRECTORY`, which is usually backed up. With the bundled compose file, place it at `/opt/secrets/ytdlp/yt-cookies.txt` on the host, readable by the container user (uid 100).
 
 ### Errors
 

@@ -14,6 +14,7 @@ def test_defaults_with_api_key(clean_env, tmp_output_dir):
     s = Settings()
     assert s.output_directory == tmp_output_dir
     assert s.cleanup_retention_days == 7
+    assert s.ytdlp_cookies_file == "/run/secrets/yt-cookies.txt"
     assert s.transport == "http"
     assert s.host == "127.0.0.1"
     assert s.port == 8000

@@ -7,13 +7,16 @@ FastMCP server for video download, conversion, and cleanup
 import asyncio
 import hmac
 import json
+import os
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -67,6 +70,25 @@ def _validate_cookies_path(cookies_file: str) -> Path:
     return resolved
 
 
+def _env_cookies_copy() -> str | None:
+    """Private temp copy of YTDLP_COOKIES_FILE, or None when that file is absent or unreadable.
+
+    A copy, because yt-dlp writes the cookie jar back on exit: that fails on the
+    read-only mount and would otherwise rewrite the secret. Contents are never logged.
+    """
+    src = settings.ytdlp_cookies_file
+    if not src or not os.path.isfile(src) or not os.access(src, os.R_OK):
+        return None
+    fd, tmp = tempfile.mkstemp(prefix="yt-cookies-", suffix=".txt")  # mode 0600
+    try:
+        with os.fdopen(fd, "wb") as dst, open(src, "rb") as f:
+            shutil.copyfileobj(f, dst)
+    except OSError:
+        os.unlink(tmp)
+        raise
+    return tmp
+
+
 _api_key = settings.mcp_api_key.get_secret_value()
 _auth = BearerTokenVerifier(api_key=_api_key) if _api_key else None
 
@@ -84,9 +106,9 @@ File lifecycle:
      token (URL-encode the filename — yt-dlp emits unicode chars in some ids).
   3. convert_video(filename, target_format) re-encodes a file already in the
      output directory to mp4/webm/avi/mov/mkv.
-  4. Files auto-expire after the retention window (default 7 days); a background
-     thread sweeps hourly. cleanup_files is a manual override — only call it when
-     the user explicitly asks to free space.
+  4. Files and job records auto-expire after the retention window (default 7
+     days); a background thread sweeps at startup and hourly. cleanup_files is a
+     manual override — only call it when the user explicitly asks to free space.
 
 Choosing a tool:
   - "download / grab / save this video"  -> download_video
@@ -96,9 +118,10 @@ Choosing a tool:
 
 Reference data (no tool call needed) is exposed as resources:
   ytdlp://formats, ytdlp://retention, ytdlp://version, ytdlp://config.
-For authenticated (private/age-restricted) videos, supply a Netscape-format
-cookies file placed in the output directory; see the `authenticated_download`
-prompt.
+For authenticated (private/age-restricted) videos the server applies its own
+cookies file automatically when one is configured; otherwise supply a
+Netscape-format cookies file placed in the output directory (see the
+`authenticated_download` prompt).
 """
 
 # Initialize FastMCP server
@@ -370,46 +393,46 @@ def get_video_filename(url: str, ext: str = "mp4") -> str:
         return f"{file_id}.%(ext)s"
 
 
-def cleanup_old_files(retention_days: int | None = None):
-    """Clean up files older than retention period."""
+# Downloads, conversions and the partial files an interrupted yt-dlp leaves behind.
+DOWNLOAD_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v", ".part", ".ytdl"}
+
+
+def cleanup_old_files(retention_days: int | None = None) -> int:
+    """Delete downloads and job records older than the retention window.
+
+    Walks OUTPUT_DIR only (symlinks are not followed) and touches nothing but
+    download extensions and files under .jobs/, so cookies files placed in the
+    output directory survive. Returns the number of downloads deleted.
+    """
     if retention_days is None:
         retention_days = CLEANUP_RETENTION_DAYS
-
-    cutoff_date = datetime.now() - timedelta(days=retention_days)
+    cutoff = time.time() - retention_days * 86400
+    root = Path(OUTPUT_DIR)
+    jobs_dir = root / ".jobs"
     deleted_count = 0
-
-    output_path = Path(OUTPUT_DIR)
-    if not output_path.exists():
-        return deleted_count
-
-    # Video file extensions
-    video_extensions = {'.mp4', '.webm', '.avi', '.mov', '.mkv', '.flv', '.m4v'}
-
-    for file_path in output_path.iterdir():
-        if file_path.is_file():
-            # Check if it's a video file
-            if file_path.suffix.lower() in video_extensions:
-                # Check file creation time
-                try:
-                    file_time = datetime.fromtimestamp(file_path.stat().st_ctime)
-                    if file_time < cutoff_date:
-                        file_path.unlink()
-                        deleted_count += 1
-                except (OSError, ValueError):
-                    # Skip files we can't process
-                    continue
-
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            path = Path(dirpath) / name
+            is_download = path.suffix.lower() in DOWNLOAD_EXTENSIONS
+            if not (is_download or path.parent == jobs_dir) or path.is_symlink():
+                continue
+            try:
+                if path.stat().st_ctime < cutoff:
+                    path.unlink()
+                    deleted_count += is_download
+            except OSError:
+                continue  # skip files we can't process
     return deleted_count
 
 
 def run_cleanup_periodically():
-    """Background thread to run cleanup periodically."""
+    """Background thread: sweep at startup, then hourly. Never lets an error escape."""
     while True:
-        time.sleep(3600)  # Run every hour
         try:
             cleanup_old_files()
         except Exception as e:
             print(f"Error in periodic cleanup: {e}")
+        time.sleep(3600)
 
 
 # Start background cleanup thread
@@ -421,9 +444,13 @@ cleanup_thread.start()
 # severs a request after ~60 s, so a download runs on a worker thread and the
 # tool waits at most INLINE_WAIT_SECONDS before handing back a job handle.
 INLINE_WAIT_SECONDS = 20
-# ponytail: in-memory and unbounded, lost on restart; downloads are rare.
+# Futures of jobs started by this process; every job is also persisted to
+# OUTPUT_DIR/.jobs/<job_id>.json so get_download_result survives a restart.
+# ponytail: in-memory and unbounded; downloads are rare.
 # Evict finished jobs if this ever holds more than a few hundred entries.
 _jobs: dict[str, Future] = {}
+_JOB_ID_RE = re.compile(r"[0-9a-f]{32}")
+INTERRUPTED_MESSAGE = "Download was interrupted by a restart, start the download again"
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="download")
 
 
@@ -436,6 +463,52 @@ class DownloadJob(_DictCompatModel):
         default_factory=lambda: {"tool": "get_download_result", "wait_seconds": INLINE_WAIT_SECONDS},
         description="Call this tool with the job_id to long-poll for the result",
     )
+
+
+def _job_path(job_id: str) -> Path:
+    return Path(OUTPUT_DIR) / ".jobs" / f"{job_id}.json"
+
+
+def _save_job(job_id: str, created_at: str, status: str, **extra: Any) -> None:
+    """Write the job record atomically. A failed write costs only restart survival."""
+    record = {
+        "job_id": job_id,
+        "status": status,
+        "created_at": created_at,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        **extra,
+    }
+    path = _job_path(job_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(record))
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"[jobs] could not persist job {job_id}: {e}")
+
+
+def _load_job(job_id: str) -> dict[str, Any] | None:
+    if not _JOB_ID_RE.fullmatch(job_id):  # job_id becomes a filename
+        return None
+    try:
+        return json.loads(_job_path(job_id).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _run_job(job_id: str, created_at: str, *args: Any) -> "DownloadResult | ErrorResult":
+    """Worker-thread entry: run the download and persist how it ended."""
+    try:
+        result = _run_download(*args)
+    except Exception as e:
+        _save_job(job_id, created_at, "error", error=str(e))
+        raise
+    if isinstance(result, ErrorResult):
+        _save_job(job_id, created_at, "error", error=result.error)
+    else:
+        _save_job(job_id, created_at, "success", result=result.model_dump(mode="json"))
+    return result
 
 
 def _raise_on_error(result):
@@ -484,7 +557,9 @@ async def download_video(
 
     Args:
         url: Video URL to download
-        cookies_file: Optional plain filename of a cookies file in the output directory
+        cookies_file: Optional plain filename of a cookies file in the output directory.
+            Ignored when the server has its own cookies file configured (it is then used
+            for every download automatically).
         output_directory: Optional subdirectory of the output directory.
         convert_to: Optional target container (mp4/webm/avi/mov/mkv). When set, the
             downloaded file is transcoded with FFmpeg before returning, so a single
@@ -496,7 +571,11 @@ async def download_video(
         raise a tool error.
     """
     job_id = uuid.uuid4().hex
-    _jobs[job_id] = _executor.submit(_run_download, url, cookies_file, output_directory, convert_to)
+    created_at = datetime.now(timezone.utc).isoformat()
+    _save_job(job_id, created_at, "running")
+    _jobs[job_id] = _executor.submit(
+        _run_job, job_id, created_at, url, cookies_file, output_directory, convert_to
+    )
     return await _wait_for_job(job_id, INLINE_WAIT_SECONDS)
 
 
@@ -515,11 +594,21 @@ async def get_download_result(
     """[media] Poll a download that download_video returned as pending.
 
     Returns the DownloadResult once finished, otherwise the same pending handle;
-    poll again. A failed download raises a tool error. Jobs live in memory and are lost on a server restart.
+    poll again. A failed download raises a tool error. Results survive a server
+    restart until the retention window expires; a download cut off by a restart
+    raises a tool error asking to start it again.
     """
-    if job_id not in _jobs:
-        raise ToolError(f"Unknown job_id {job_id!r} (never dispatched, or the server restarted)")
-    return await _wait_for_job(job_id, wait_seconds)
+    if job_id in _jobs:
+        return await _wait_for_job(job_id, wait_seconds)
+    record = _load_job(job_id)
+    if record is None:
+        raise ToolError(f"Unknown job_id {job_id!r} (never dispatched, or expired after the retention window)")
+    if record.get("status") == "success":
+        return DownloadResult(**record["result"])
+    if record.get("status") == "error":
+        raise ToolError(record.get("error") or "Download failed")
+    # Still "running" on disk but not in this process: the server restarted mid-download.
+    raise ToolError(INTERRUPTED_MESSAGE)
 
 
 def _run_download(
@@ -529,6 +618,7 @@ def _run_download(
     convert_to: str | None = None,
 ) -> DownloadResult | ErrorResult:
     """Blocking download; runs on the worker thread."""
+    env_cookies: str | None = None
     try:
         print("[download_video] Request received")
         print(f"[download_video] URL: {url}")
@@ -542,7 +632,12 @@ def _run_download(
         if cookies_file in ("[null]", "null", ""):
             cookies_file = None
 
-        if cookies_file:
+        # Precedence: the server-wide YTDLP_COOKIES_FILE wins over the cookies_file argument.
+        env_cookies = _env_cookies_copy()
+        if env_cookies:
+            print("[download_video] using cookies from YTDLP_COOKIES_FILE")
+            cookies_file = env_cookies
+        elif cookies_file:
             print("[download_video] cookies_file provided")
             try:
                 cookies_file = str(_validate_cookies_path(cookies_file))
@@ -739,6 +834,9 @@ def _run_download(
     except Exception as e:
         print(f"[download_video] Unexpected error: {e}")
         return ErrorResult(error=str(e))
+    finally:
+        if env_cookies:
+            Path(env_cookies).unlink(missing_ok=True)
 
 
 ALLOWED_FORMATS = ("mp4", "webm", "avi", "mov", "mkv")
@@ -906,12 +1004,11 @@ def _resource_retention() -> str:
     return json.dumps(
         {
             "retention_days": CLEANUP_RETENTION_DAYS,
-            "swept_extensions": sorted(
-                {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"}
-            ),
-            "sweep_interval": "hourly (background thread)",
+            "swept_extensions": sorted(DOWNLOAD_EXTENSIONS),
+            "swept_job_records": ".jobs/ (download job results)",
+            "sweep_interval": "at startup, then hourly (background thread)",
             "manual_override": "cleanup_files(retention_days=...) — minimum 1 day",
-            "basis": "file ctime older than now - retention_days is deleted",
+            "basis": "file ctime older than now - retention_days is deleted (whole output directory, subfolders included)",
         },
         indent=2,
     )
@@ -1004,7 +1101,9 @@ def authenticated_download_prompt(
     return (
         f"The video at {url} likely requires sign-in (private, age-restricted, or "
         "members-only).\n\n"
-        f"1. Ensure a Netscape-format cookies export named '{cookies_file}' exists in "
+        f"0. If the server has its own cookies file (YTDLP_COOKIES_FILE), it is used "
+        f"automatically: call download_video(url='{url}') and skip steps 1-2.\n"
+        f"1. Otherwise ensure a Netscape-format cookies export named '{cookies_file}' exists in "
         "the server's output directory (it must be a plain filename — no path "
         "separators or .. — for the traversal guard to accept it).\n"
         f"2. Call download_video(url='{url}', cookies_file='{cookies_file}').\n"
@@ -1014,13 +1113,11 @@ def authenticated_download_prompt(
     )
 
 
-from datetime import timezone as _tz  # noqa: E402
-
 from starlette.requests import Request as _SReq  # noqa: E402
 from starlette.responses import FileResponse as _FResp  # noqa: E402
 from starlette.responses import JSONResponse as _SResp  # noqa: E402
 
-_start_time = datetime.now(_tz.utc)
+_start_time = datetime.now(timezone.utc)
 
 
 def _resolve_version() -> str:
@@ -1055,7 +1152,7 @@ async def _health(request: _SReq) -> _SResp:
         "service": "mcp-ytdlp",
         "version": _version,
         "upstream_reachable": True,
-        "uptime_seconds": int((datetime.now(_tz.utc) - _start_time).total_seconds()),
+        "uptime_seconds": int((datetime.now(timezone.utc) - _start_time).total_seconds()),
     })
 
 

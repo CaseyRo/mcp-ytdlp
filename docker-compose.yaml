@@ -24,6 +24,12 @@ services:
       PORT: "8000"
     volumes:
       - ${OUTPUT_HOST_DIR:-ytdlp_output}:/data
+      # YouTube login cookies, outside the backed-up /data. The server reads
+      # /run/secrets/yt-cookies.txt (YTDLP_COOKIES_FILE default) when present.
+      # The directory is mounted, not the file: short-syntax binds create a
+      # missing source, so an absent /opt/secrets/ytdlp yields an empty dir
+      # (no cookies) instead of a failed stack or a directory named like the file.
+      - /opt/secrets/ytdlp:/run/secrets:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(3); s.connect(('localhost',8000)); s.close()"]
