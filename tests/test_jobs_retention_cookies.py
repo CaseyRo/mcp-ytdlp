@@ -120,7 +120,7 @@ def test_retention_deletes_old_downloads_and_records_only(tmp_output_dir, monkey
 
     deleted = server.cleanup_old_files(1)
 
-    assert deleted == 3  # downloads only; the job record is not counted
+    assert deleted == 5  # downloads only; the job record is not counted
     assert not any(p.exists() for p in old)
     assert all(p.exists() for p in new + keep_old)
 

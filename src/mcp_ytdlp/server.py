@@ -420,7 +420,8 @@ def cleanup_old_files(retention_days: int | None = None) -> int:
     for dirpath, _dirs, files in os.walk(root):
         for name in files:
             path = Path(dirpath) / name
-            is_download = path.suffix.lower() in DOWNLOAD_EXTENSIONS
+            # job records are .json too; they are deleted below but not counted as downloads
+            is_download = path.suffix.lower() in DOWNLOAD_EXTENSIONS and path.parent != jobs_dir
             if not (is_download or path.parent == jobs_dir) or path.is_symlink():
                 continue
             try:
