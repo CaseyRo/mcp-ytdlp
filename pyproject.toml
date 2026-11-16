@@ -15,6 +15,8 @@ classifiers = [
 dependencies = [
   "fastmcp>=4.0.10,<5.0.0",
   "yt-dlp>=2026.6.9",
+  # Solver scripts for YouTube's JS "n challenge"; run by the Deno binary in the image.
+  "yt-dlp-ejs>=0.8.0",
   "pydantic>=2.6",
   "pydantic-settings>=2.2",
   # Security floors (transitive deps of fastmcp; pinned to address CVEs)
