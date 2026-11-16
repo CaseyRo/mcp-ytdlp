@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 # System deps: ffmpeg for media processing; ca-certificates for httpx2 (OS trust store)
 RUN apt-get update && \
