@@ -26,6 +26,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
         "HOST",
         "PORT",
         "MCP_API_KEY",
+        "YTDLP_COOKIES_FILE",
     ):
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
