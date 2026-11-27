@@ -737,7 +737,10 @@ def _run_download(
         # the new file that way.
         command = [
             "yt-dlp",
-            "--format", "best[ext=mp4]",
+            # Single-file mp4 first (unchanged pick for YouTube); sites that only
+            # serve split streams (Vimeo HLS) fall back to video+audio merged to mp4.
+            "--format", "best[ext=mp4]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b",
+            "--merge-output-format", "mp4",
             "--output", output_template,
             "--no-playlist",
             "--print", "after_move:filepath",
