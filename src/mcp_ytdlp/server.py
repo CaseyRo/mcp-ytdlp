@@ -54,6 +54,22 @@ def _validate_url(url: str) -> None:
         raise ValueError("Disallowed URL host")
 
 
+_VIMEO_PAGE = re.compile(r"^https?://(?:www\.)?vimeo\.com/(\d+)(?:/([0-9a-f]+))?/?(?:[?#].*)?$")
+
+
+def _vimeo_player_url(url: str) -> str:
+    """vimeo.com/<id>[/<hash>] -> player.vimeo.com/video/<id>[?h=<hash>].
+
+    yt-dlp's vimeo.com page extractor now needs a logged-in session; the player
+    endpoint serves the same public or unlisted video without one.
+    """
+    m = _VIMEO_PAGE.match(url)
+    if not m:
+        return url
+    vid, h = m.groups()
+    return f"https://player.vimeo.com/video/{vid}" + (f"?h={h}" if h else "")
+
+
 def _validate_cookies_path(cookies_file: str) -> Path:
     """Confine cookies_file to OUTPUT_DIR and reject path traversal.
 
@@ -635,6 +651,7 @@ def _run_download(
             _validate_url(url)
         except ValueError as e:
             return ErrorResult(error=str(e), url=url)
+        url = _vimeo_player_url(url)
 
         # Clean up cookies_file value
         if cookies_file in ("[null]", "null", ""):

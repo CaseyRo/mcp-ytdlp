@@ -84,3 +84,20 @@ def test_cookies_path_accepts_real_file(tmp_output_dir):
 
     resolved = _validate_cookies_path("cookies.txt")
     assert resolved == cookies.resolve()
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://vimeo.com/76979871", "https://player.vimeo.com/video/76979871"),
+        ("https://www.vimeo.com/76979871/", "https://player.vimeo.com/video/76979871"),
+        ("https://vimeo.com/123/abc123def", "https://player.vimeo.com/video/123?h=abc123def"),
+        ("https://vimeo.com/channels/staffpicks/123", "https://vimeo.com/channels/staffpicks/123"),
+        ("https://player.vimeo.com/video/123", "https://player.vimeo.com/video/123"),
+        ("https://www.youtube.com/watch?v=x", "https://www.youtube.com/watch?v=x"),
+    ],
+)
+def test_vimeo_player_url(url: str, expected: str):
+    from mcp_ytdlp.server import _vimeo_player_url
+
+    assert _vimeo_player_url(url) == expected
